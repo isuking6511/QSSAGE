@@ -13,7 +13,7 @@ def is_url_safe(url: str) -> bool:
         print(f"[샌드박스] 접속 실패: {e}")
         return False
 
-    # 간단한 필터 (여기선 "phishing"이 안 들어있고 응답 코드가 200이면 안전하다고 가정)
+    # 간단한 필터 
     return "phishing" not in url.lower() and response.status_code == 200
 
 @app.route("/")

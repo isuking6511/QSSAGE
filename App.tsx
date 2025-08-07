@@ -24,7 +24,7 @@ export default function QRInterfaceWrapper() {
     setQrData(data);
 
     try {
-      console.log("🌐 백엔드 URL 검사 요청 시작...");
+      console.log(" 백엔드 URL 검사 요청 시작...");
       const response = await fetch("http://10.96.223.167:3000/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -32,16 +32,16 @@ export default function QRInterfaceWrapper() {
       });
 
       const result = await response.json();
-      console.log("✅ 검사 결과:", result);
+      console.log(" 검사 결과:", result);
 
       if (result.safe) {
-        Alert.alert("🟢 안전한 링크입니다", result.reason || data);
+        Alert.alert("안전한 링크입니다", result.reason || data);
       } else {
-        Alert.alert("🚨 피싱 위험이 있는 링크입니다!", result.reason || data);
+        Alert.alert(" 피싱 위험이 있는 링크입니다!", result.reason || data);
       }
     } catch (error) {
-      console.error("❌ 오류 발생:", error);
-      Alert.alert("❌ 오류", "서버 연결 실패 또는 분석 중 에러");
+      console.error(" 오류 발생:", error);
+      Alert.alert(" 오류", "서버 연결 실패 또는 분석 중 에러");
     }
   };
 
@@ -53,7 +53,7 @@ export default function QRInterfaceWrapper() {
   if (!permission?.granted) {
     return (
       <SafeAreaView style={styles.centered}>
-        <Text>📷 카메라 권한이 필요합니다.</Text>
+        <Text> 카메라 권한이 필요합니다.</Text>
         <TouchableOpacity onPress={requestPermission}>
           <Text style={styles.button}>권한 요청</Text>
         </TouchableOpacity>
@@ -64,9 +64,9 @@ export default function QRInterfaceWrapper() {
   if (!showScanner) {
     return (
       <SafeAreaView style={styles.centered}>
-        <Text style={styles.title}>🎯 QR 피싱 탐지기</Text>
+        <Text style={styles.title}> QR 피싱 탐지기</Text>
         <TouchableOpacity onPress={() => setShowScanner(true)}>
-          <Text style={styles.button}>📷 스캔 시작하기</Text>
+          <Text style={styles.button}> 스캔 시작하기</Text>
         </TouchableOpacity>
       </SafeAreaView>
     );
@@ -91,13 +91,13 @@ export default function QRInterfaceWrapper() {
 
       <View style={styles.bottomControls}>
         <TouchableOpacity onPress={handleResetScanner}>
-          <Text style={styles.button}>🔁 다시 스캔</Text>
+          <Text style={styles.button}> 다시 스캔</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => Alert.alert("QR 데이터", qrData ?? "없음")}>
-          <Text style={styles.button}>📤 결과 보기</Text>
+          <Text style={styles.button}> 결과 보기</Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => setShowScanner(false)}>
-          <Text style={styles.button}>🏠 홈으로</Text>
+          <Text style={styles.button}> 홈으로</Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
