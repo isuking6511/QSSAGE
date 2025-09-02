@@ -1,0 +1,34 @@
+services:
+  db:
+    image: postgis/postgis:16-3.4-alpine
+    container_name: qr-db
+    environment:
+      POSTGRES_DB: qssing
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: 1234
+    ports:
+      - "127.0.0.1:5432:5432"     # 로컬만 개방
+    volumes:
+      - db:/var/lib/postgresql/data
+
+  adminer:
+    image: adminer:4
+    container_name: qssing-adminer
+    ports:
+      - "127.0.0.1:8080:8080"     # 로컬만 개방
+  api:
+    build: ../api
+    container_name: qssing-api
+    depends_on:
+      - db
+    ports:
+      - "127.0.0.1:8000:8000"   # 로컬만 개방
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_NAME: qssing
+      DB_USER: app
+      DB_PASSWORD: 1234
+      ADMIN_TOKEN: "set-a-long-random-token"
+volumes:
+  db:
