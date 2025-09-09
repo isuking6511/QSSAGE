@@ -6,19 +6,13 @@ CREATE TYPE report_status AS ENUM ('pending','batched','submitted','rejected');
 
 CREATE TABLE report (
   report_id   BIGSERIAL PRIMARY KEY,
-  qr_content  TEXT NOT NULL,
+  qr_url      TEXT NOT NULL,
   loc         GEOGRAPHY(Point,4326) NOT NULL,                 
-  qr_hash     TEXT GENERATED ALWAYS AS
-              (encode(digest(lower(coalesce(qr_content,'')),'sha256'),'hex')) STORED,
-  status      report_status NOT NULL DEFAULT 'pending',
-  created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
-  reviewed_at TIMESTAMPTZ,
-  admin_note  TEXT
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
 -- 지오 인덱스/상태 인덱스
 CREATE INDEX idx_report_loc     ON report USING GIST (loc);
-CREATE INDEX idx_report_status  ON report(status, created_at DESC);
 
 -- 배치(일괄 신고 묶음)
 CREATE TABLE submit_batch (

@@ -1,13 +1,18 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
-const Redis = require('ioredis');
 const fs = require('fs');
 const fetch = require('node-fetch');
+const { Pool } = require('pg');
+const pool = new Pool({
+  user: 'your_username',
+  host: 'localhost',
+  database: 'your_database',
+  password: 'your_password',
+  port: 5432,
+});
 
 const app = express();
 app.use(express.json());
-
-const redis = new Redis();
 
 // OpenPhish에서 피싱 URL 리스트 받아서 검사
 async function checkWithOpenPhish(targetUrl) {
@@ -95,9 +100,12 @@ app.post('/scan', async (req, res) => {
     const logEntry = `${timestamp} | ${url} | ${location || 'unknown'} | Score: ${score}\n`;
     fs.appendFileSync('report.log', logEntry, 'utf8');
 
-    // Redis 저장 - 위험 점수 10 이상인 경우만
+    // PostgreSQL 저장 - 위험 점수 10 이상인 경우만
     if (score >= 10) {
-      await redis.zadd('high_risk_urls', score, JSON.stringify({ url, location, timestamp }));
+      await pool.query(
+        'INSERT INTO high_risk_urls (url, location, score, timestamp) VALUES ($1, $2, $3, $4)',
+        [url, location, score, timestamp]
+      );
     }
 
     res.json({
@@ -144,11 +152,10 @@ app.get('/admin/reports', (req, res) => {
   res.send(html);
 });
 
-// 고위험 URL만 Redis에서 불러오는 관리자 라우트
+// 고위험 URL만 PostgreSQL에서 불러오는 관리자 라우트
 app.get('/admin/highrisk', async (req, res) => {
-  const results = await redis.zrangebyscore('high_risk_urls', 10, '+inf');
-  const rows = results.map((entry) => {
-    const { url, location, timestamp } = JSON.parse(entry);
+  const result = await pool.query('SELECT * FROM high_risk_urls WHERE score >= 10 ORDER BY timestamp DESC');
+  const rows = result.rows.map(({ url, location, timestamp }) => {
     return `<tr><td>${timestamp}</td><td>${url}</td><td>${location}</td></tr>`;
   }).join('');
 

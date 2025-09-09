@@ -12,6 +12,7 @@
   "description": "",
   "dependencies": {
     "express": "^5.1.0",
+    "pg": "^8.16.3",
     "puppeteer": "^24.8.2"
   }
 }
