@@ -4,10 +4,10 @@ const fs = require('fs');
 const fetch = require('node-fetch');
 const { Pool } = require('pg');
 const pool = new Pool({
-  user: 'your_username',
+  user: 'app',
   host: 'localhost',
-  database: 'your_database',
-  password: 'your_password',
+  database: 'qssing',
+  password: '1234',
   port: 5432,
 });
 
