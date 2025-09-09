@@ -46,7 +46,7 @@ app.post('/scan', async (req, res) => {
     const isListedInOpenPhish = await checkWithOpenPhish(url);
     if (isListedInOpenPhish) {
       console.log("⚠️ OpenPhish 목록에 포함된 피싱 URL입니다");
-      score += 10;
+      score += 5;
     }
 
     const parsedUrl = new URL(url);
@@ -101,7 +101,7 @@ app.post('/scan', async (req, res) => {
     fs.appendFileSync('report.log', logEntry, 'utf8');
 
     // PostgreSQL 저장 - 위험 점수 10 이상인 경우만
-    if (score >= 10) {
+    if (score >= 5) {
       await pool.query(
         'INSERT INTO high_risk_urls (url, location, score, timestamp) VALUES ($1, $2, $3, $4)',
         [url, location, score, timestamp]
