@@ -30,5 +30,38 @@ services:
       DB_USER: app
       DB_PASSWORD: 1234
       ADMIN_TOKEN: "set-a-long-random-token"
+
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter
+    container_name: qssing-postgres-exporter
+    environment:
+      DATA_SOURCE_NAME: "postgresql://app:1234@db:5432/qssing?sslmode=disable"
+    ports:
+      - "127.0.0.1:9187:9187"
+    depends_on:
+      - db
+
+  prometheus:
+    image: prom/prometheus
+    container_name: qssing-prometheus
+    volumes:
+      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
+      - prometheus_data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    depends_on:
+      - postgres-exporter
+
+  grafana:
+    image: grafana/grafana
+    container_name: qssing-grafana
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
 volumes:
   db:
+  prometheus_data:
