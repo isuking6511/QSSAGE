@@ -41,27 +41,7 @@ services:
     depends_on:
       - db
 
-  prometheus:
-    image: prom/prometheus
-    container_name: qssing-prometheus
-    volumes:
-      - ./prometheus.yaml:/etc/prometheus/prometheus.yaml:ro
-      - prometheus_data:/prometheus
-    ports:
-      - "127.0.0.1:9090:9090"
-    depends_on:
-      - postgres-exporter
 
-  grafana:
-    image: grafana/grafana
-    container_name: qssing-grafana
-    environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-    ports:
-      - "127.0.0.1:3000:3000"
-    depends_on:
-      - prometheus
 volumes:
   db:
   prometheus_data:

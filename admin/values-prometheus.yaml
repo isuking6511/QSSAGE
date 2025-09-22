@@ -1,0 +1,24 @@
+server:
+  global:
+    scrape_interval: 15s
+  service:
+    type: NodePort
+
+extraScrapeConfigs: |
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['host.minikube.internal:9187']
+
+alertmanager:
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      receiver: 'slack'
+    receivers:
+    - name: 'slack'
+      slack_configs:
+      - send_resolved: true
+        channel: '#alerts'
+        username: 'prometheus'
+        api_url: 'https://hooks.slack.com/services/XXX/YYY/ZZZ'
