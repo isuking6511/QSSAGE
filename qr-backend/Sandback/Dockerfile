@@ -1,11 +1,4 @@
-FROM python:3.12
-
+FROM python:3.12-slim
 WORKDIR /app
-
-COPY sandbox_app.py .
-
-RUN pip install flask requests
-
-ENV PYTHONUNBUFFERED=1
-
-CMD ["python", "sandbox_app.py"]
+COPY Sandbox_in.py .
+CMD ["python", "Sandbox_in.py"]
