@@ -13,6 +13,7 @@ export default function QRInterfaceWrapper() {
   const [showScanner, setShowScanner] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [qrData, setQrData] = useState<string | null>(null);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   useEffect(() => {
     requestPermission();
@@ -22,17 +23,35 @@ export default function QRInterfaceWrapper() {
     console.log("🔍 QR 코드 인식됨:", data);
     setScanned(true);
     setQrData(data);
+    setIsAnalyzing(true);
 
     try {
       console.log("🌐 백엔드 URL 검사 요청 시작...");
-      const response = await fetch("http://10.96.216.121:3000/scan", {
+      console.log("📤 요청 URL:", "http://192.168.10.162:3000/scan");
+      console.log("📤 요청 데이터:", { url: data });
+      
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 60000); // 60초 타임아웃
+      
+      const response = await fetch("http://192.168.10.162:3000/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: data }),
+        signal: controller.signal,
       });
+      
+      clearTimeout(timeoutId);
+
+      console.log("📥 응답 상태:", response.status, response.statusText);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
 
       const result = await response.json();
       console.log("✅ 검사 결과:", result);
+      console.log("🔍 safe 값:", result.safe);
+      console.log("🔍 reason 값:", result.reason);
 
       if (result.safe) {
         Alert.alert("🟢 안전한 링크입니다", result.reason || data);
@@ -41,13 +60,17 @@ export default function QRInterfaceWrapper() {
       }
     } catch (error) {
       console.error("❌ 오류 발생:", error);
-      Alert.alert("❌ 오류", "서버 연결 실패 또는 분석 중 에러");
+      console.error("❌ 오류 상세:", error.message);
+      Alert.alert("❌ 오류", `서버 연결 실패 또는 분석 중 에러: ${error.message}`);
+    } finally {
+      setIsAnalyzing(false);
     }
   };
 
   const handleResetScanner = () => {
     setScanned(false);
     setQrData(null);
+    setIsAnalyzing(false);
   };
 
   if (!permission?.granted) {
@@ -90,8 +113,13 @@ export default function QRInterfaceWrapper() {
       </CameraView>
 
       <View style={styles.bottomControls}>
-        <TouchableOpacity onPress={handleResetScanner}>
-          <Text style={styles.button}>🔁 다시 스캔</Text>
+        {isAnalyzing && (
+          <Text style={styles.analyzingText}>🔍 URL 분석 중...</Text>
+        )}
+        <TouchableOpacity onPress={handleResetScanner} disabled={isAnalyzing}>
+          <Text style={[styles.button, isAnalyzing && styles.disabledButton]}>
+            🔁 다시 스캔
+          </Text>
         </TouchableOpacity>
         <TouchableOpacity onPress={() => Alert.alert("QR 데이터", qrData ?? "없음")}>
           <Text style={styles.button}>📤 결과 보기</Text>
@@ -174,5 +202,16 @@ const styles = StyleSheet.create({
     fontSize: 24,
     fontWeight: "bold",
     marginBottom: 20,
+  },
+  analyzingText: {
+    color: "#007AFF",
+    fontSize: 16,
+    fontWeight: "bold",
+    marginBottom: 10,
+    textAlign: "center",
+  },
+  disabledButton: {
+    backgroundColor: "#666",
+    opacity: 0.5,
   },
 });
