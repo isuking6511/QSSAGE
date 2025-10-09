@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import {  StyleSheet,
   Text,
   TouchableOpacity,
@@ -14,12 +14,16 @@ export default function QRInterfaceWrapper() {
   const [scanned, setScanned] = useState(false);
   const [qrData, setQrData] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const isHandlingRef = useRef(false);
 
   useEffect(() => {
     requestPermission();
   }, []);
 
   const handleBarcodeScanned = async (data: string) => {
+    if (isHandlingRef.current) return; // 재진입 방지
+    isHandlingRef.current = true;
+
     console.log("🔍 QR 코드 인식됨:", data);
     setScanned(true);
     setQrData(data);
@@ -50,20 +54,37 @@ export default function QRInterfaceWrapper() {
 
       const result = await response.json();
       console.log("✅ 검사 결과:", result);
-      console.log("🔍 safe 값:", result.safe);
-      console.log("🔍 reason 값:", result.reason);
+      const safe = (result as any).safe ?? (typeof (result as any).risk === 'string' ? (result as any).risk.includes('✅') : undefined);
+      const reason = (result as any).reason ?? (
+        typeof (result as any).risk === 'string'
+          ? (result as any).risk + (
+              Array.isArray((result as any).reasons) && (result as any).reasons.length
+                ? ' - ' + (result as any).reasons.join(', ')
+                : ''
+            )
+          : undefined
+      );
+      console.log("🔍 safe(derived) 값:", safe);
+      console.log("🔍 reason(derived) 값:", reason);
 
-      if (result.safe) {
-        Alert.alert("🟢 안전한 링크입니다", result.reason || data);
+      if (safe) {
+        Alert.alert("🟢 안전한 링크입니다", reason || data);
+      } else if (safe === false) {
+        Alert.alert("🚨 피싱 위험이 있는 링크입니다!", reason || data);
       } else {
-        Alert.alert("🚨 피싱 위험이 있는 링크입니다!", result.reason || data);
+        Alert.alert("ℹ️ 결과 확인 필요", reason || data);
       }
     } catch (error) {
       console.error("❌ 오류 발생:", error);
-      console.error("❌ 오류 상세:", error.message);
-      Alert.alert("❌ 오류", `서버 연결 실패 또는 분석 중 에러: ${error.message}`);
+      const message = error instanceof Error ? error.message : String(error);
+      console.error("❌ 오류 상세:", message);
+      Alert.alert("❌ 오류", `서버 연결 실패 또는 분석 중 에러: ${message}`);
     } finally {
       setIsAnalyzing(false);
+      // 1) 스캐너 잠시 비활성화 후 재활성화 (중복 호출 방지)
+      setTimeout(() => {
+        isHandlingRef.current = false;
+      }, 800); // 0.8초 디바운스
     }
   };
 
@@ -71,6 +92,7 @@ export default function QRInterfaceWrapper() {
     setScanned(false);
     setQrData(null);
     setIsAnalyzing(false);
+    isHandlingRef.current = false;
   };
 
   if (!permission?.granted) {
