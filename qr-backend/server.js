@@ -6,29 +6,58 @@ app.use(express.json());
 
 // ===== 설정 =====
 const PORT = process.env.PORT || 3000;
-const NAV_TIMEOUT = 15000;
-const POST_NAV_WAIT = 2500;
+const NAV_TIMEOUT = 10000;  // 15초 -> 10초로 단축
+const POST_NAV_WAIT = 1500; // 2.5초 -> 1.5초로 단축
 
 const WHITELIST_HOSTS = new Set([
+  // 검색엔진
   'google.com','www.google.com',
   'naver.com','www.naver.com',
-  'kakao.com','www.kakao.com'
+  'daum.net','www.daum.net',
+  'bing.com','www.bing.com',
+  'yahoo.com','www.yahoo.com',
+  
+  // 소셜미디어
+  'kakao.com','www.kakao.com',
+  'facebook.com','www.facebook.com',
+  'instagram.com','www.instagram.com',
+  'twitter.com','www.twitter.com','x.com','www.x.com',
+  'youtube.com','www.youtube.com',
+  'linkedin.com','www.linkedin.com',
+  
+  // 주요 서비스
+  'github.com','www.github.com',
+  'stackoverflow.com','www.stackoverflow.com',
+  'amazon.com','www.amazon.com',
+  'microsoft.com','www.microsoft.com',
+  'apple.com','www.apple.com',
+  'netflix.com','www.netflix.com',
+  'spotify.com','www.spotify.com',
+  
+  // 한국 주요 사이트
+  'coupang.com','www.coupang.com',
+  '11st.co.kr','www.11st.co.kr',
+  'gmarket.co.kr','www.gmarket.co.kr',
+  'auction.co.kr','www.auction.co.kr',
+  'tistory.com','www.tistory.com',
+  'blog.naver.com',
+  'cafe.naver.com'
 ]);
 
 const WEIGHTS = {
-  evalDetected: 18,
-  base64EvalDetected: 22,
-  hasPasswordInput: 20,
-  formsToExternal: 25,
-  redirects1: 4,
-  redirectsMany: 10,
-  httpsMissing: 6,
-  hiddenIframes: 8,
-  externalScriptMany: 6,
-  hostIsIP: 28,
-  punycode: 20,
-  isShortener: 15,
-  externalFormWithPasswordBonus: 20
+  evalDetected: 25,           // 악성 코드 탐지는 높은 가중치 유지
+  base64EvalDetected: 30,     // base64 악성 코드는 더 높은 가중치
+  hasPasswordInput: 8,        // 로그인 페이지는 정상적이므로 점수 대폭 감소
+  formsToExternal: 12,        // 외부 폼도 점수 감소 (광고/분석 도구 등)
+  redirects1: 2,              // 1회 리디렉션은 거의 무시
+  redirectsMany: 6,           // 다중 리디렉션도 점수 감소
+  httpsMissing: 3,            // HTTP 사이트 점수 감소 (많은 사이트가 아직 HTTP)
+  hiddenIframes: 10,          // 숨겨진 iframe은 여전히 의심스러움
+  externalScriptMany: 4,      // 외부 스크립트 점수 감소 (CDN, 광고 등)
+  hostIsIP: 35,               // IP 주소는 여전히 높은 위험
+  punycode: 25,               // Punycode는 여전히 의심스러움
+  isShortener: 8,             // 단축 URL 점수 감소 (많이 사용됨)
+  externalFormWithPasswordBonus: 15  // 외부 폼+비밀번호는 여전히 위험하지만 점수 감소
 };
 
 // 유틸: URL 보정
@@ -152,7 +181,7 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
   if (result.isShortener) { result.score += WEIGHTS.isShortener; result.reasons.push('단축 URL 사용'); }
 
   if (result.formsToExternal.length) {
-    result.score += WEIGHTS.formsToExternal * 0.6;
+    result.score += WEIGHTS.formsToExternal * 0.4;  // 가중치 더 감소
     result.reasons.push(`외부 폼 제출 (${result.formsToExternal.length})`);
     if (result.hasPasswordInput) {
       result.score += WEIGHTS.externalFormWithPasswordBonus;
@@ -168,15 +197,15 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
   try {
     const hostLower = (new URL(originalUrl)).hostname.toLowerCase();
     if (WHITELIST_HOSTS.has(hostLower) || WHITELIST_HOSTS.has(result.finalHostname)) {
-      const reduction = Math.min(40, result.score);
+      const reduction = Math.min(50, result.score);  // 화이트리스트 보정 강화
       result.score = Math.max(0, result.score - reduction);
       result.reasons.push(`화이트리스트 도메인 보정 (-${reduction})`);
       result.whitelisted = true;
     }
   } catch {}
 
-  if (result.score <= 25) result.risk = '✅ 안전';
-  else if (result.score <= 55) result.risk = '⚠️ 주의';
+  if (result.score <= 15) result.risk = '✅ 안전';
+  else if (result.score <= 35) result.risk = '⚠️ 주의';
   else result.risk = '🚨 위험';
 
   return result;
@@ -184,14 +213,34 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
 
 // ===== API 엔드포인트 =====
 app.post('/scan', async (req, res) => {
+  console.log('📨 /scan 요청 받음:', req.body);
   let { url } = req.body || {};
-  if (!url) return res.status(400).json({ error: 'URL이 필요합니다' });
+  if (!url) {
+    console.log('❌ URL이 없음');
+    return res.status(400).json({ error: 'URL이 필요합니다' });
+  }
+  console.log('🔍 원본 URL:', url);
   url = normalizeUrlCandidate(url);
-  if (!url) return res.status(400).json({ error: '유효한 URL이 아닙니다' });
+  if (!url) {
+    console.log('❌ URL 정규화 실패');
+    return res.status(400).json({ error: '유효한 URL이 아닙니다' });
+  }
+  console.log('✅ 정규화된 URL:', url);
 
   let browser;
   try {
-    browser = await puppeteer.launch({ headless: true, args: ['--no-sandbox'] });
+    browser = await puppeteer.launch({ 
+      headless: true, 
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-accelerated-2d-canvas',
+        '--no-first-run',
+        '--no-zygote',
+        '--disable-gpu'
+      ]
+    });
     const page = await browser.newPage();
 
     await page.evaluateOnNewDocument(() => {
@@ -230,8 +279,18 @@ app.post('/scan', async (req, res) => {
     const analysis = await analyzePage(page, url, evalDetected, base64EvalDetected);
 
     await browser.close();
-    res.json(analysis);
+    
+    // 앱이 기대하는 형식으로 응답 변환
+    const response = {
+      ...analysis,
+      safe: analysis.risk === '✅ 안전',
+      reason: analysis.risk + (analysis.reasons.length > 0 ? ' - ' + analysis.reasons.join(', ') : '')
+    };
+    
+    console.log('📊 분석 결과:', response);
+    res.json(response);
   } catch (err) {
+    console.error('❌ 분석 중 오류:', err);
     if (browser) try { await browser.close(); } catch {}
     res.status(500).json({ error: '검사 중 오류', detail: err.message });
   }
