@@ -25,7 +25,7 @@ export default function QRInterfaceWrapper() {
 
     try {
       console.log("🌐 백엔드 URL 검사 요청 시작...");
-      const response = await fetch("http://10.96.79.86:3000/scan", {
+      const response = await fetch("http://10.96.216.121:3000/scan", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: data }),
