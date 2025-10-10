@@ -157,14 +157,49 @@ export default function QRInterfaceWrapper() {
 
   if (!showScanner) {
     return (
-      <SafeAreaView style={styles.centered}>
-        <Text style={styles.title}>🎯 QR 피싱 탐지기</Text>
-        <TouchableOpacity onPress={() => setShowScanner(true)}>
-          <Text style={styles.button}>📷 스캔 시작하기</Text>
-        </TouchableOpacity>
-        <TouchableOpacity onPress={() => setShowReports(true)}>
-          <Text style={styles.button}>🗺️ 숨은 피싱 장소 찾기</Text>
-        </TouchableOpacity>
+      <SafeAreaView style={[styles.container, { paddingHorizontal: 20, paddingTop: 32 }]}>
+        <View style={{ alignItems: 'center' }}>
+          <View style={styles.heroIconBox} />
+          <Text style={styles.heroTitle}>QR 피싱 탐지기</Text>
+          <Text style={styles.heroSubtitle}>QR Phishing Detector</Text>
+
+          <Text style={styles.heroTagline}>안전한 QR 코드 스캔으로</Text>
+          <Text style={[styles.heroTagline, { marginTop: 2 }]}>피싱 위험으로부터 보호하세요</Text>
+          <Text style={styles.heroCaption}>알고리즘 기반 실시간 보안 검사</Text>
+
+          <View style={{ width: '100%', marginTop: 24 }}>
+            <View style={styles.infoCard}>
+              <View style={styles.infoIcon} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.infoTitle}>실시간 위험 탐지</Text>
+                <Text style={styles.infoDesc}>악성 링크 경고 알림</Text>
+              </View>
+            </View>
+
+            <View style={[styles.infoCard, { backgroundColor: '#eaf8f2' }]}>
+              <View style={[styles.infoIcon, { backgroundColor: '#2bb673' }]} />
+              <View style={{ flex: 1 }}>
+                <Text style={styles.infoTitle}>개인정보 보호</Text>
+                <Text style={styles.infoDesc}>피싱으로부터 개인정보 보호</Text>
+              </View>
+            </View>
+          </View>
+
+          <View style={{ width: '100%', marginTop: 28 }}>
+            <TouchableOpacity onPress={() => setShowScanner(true)} activeOpacity={0.85}>
+              <View style={styles.primaryCta}>
+                <Text style={styles.primaryCtaText}>스캔 시작하기</Text>
+              </View>
+            </TouchableOpacity>
+            <TouchableOpacity onPress={() => setShowReports(true)} activeOpacity={0.85}>
+              <View style={[styles.primaryCta, { marginTop: 12 }]}>
+                <Text style={styles.primaryCtaText}>숨은 피싱 장소 찾기</Text>
+              </View>
+            </TouchableOpacity>
+            <Text style={styles.permissionHint}>카메라 권한이 필요합니다</Text>
+          </View>
+        </View>
+
         {showReports && <MapScreen onClose={() => setShowReports(false)} />}
       </SafeAreaView>
     );
@@ -496,6 +531,42 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     alignItems: "center",
   },
+  heroIconBox: {
+    width: 160,
+    height: 160,
+    borderRadius: 32,
+    backgroundColor: '#6f7bf7',
+    marginTop: 24,
+    marginBottom: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.15,
+    shadowRadius: 20,
+    shadowOffset: { width: 0, height: 10 },
+  },
+  heroTitle: {
+    fontSize: 36,
+    fontWeight: '800',
+    color: '#111827',
+    marginTop: 8,
+  },
+  heroSubtitle: {
+    fontSize: 18,
+    color: '#6b7280',
+    marginTop: 6,
+    marginBottom: 20,
+  },
+  heroTagline: {
+    fontSize: 18,
+    color: '#1f2937',
+    textAlign: 'center',
+  },
+  heroCaption: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginTop: 10,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
   camera: {
     width: "100%",
     height: "80%",
@@ -560,6 +631,32 @@ const styles = StyleSheet.create({
     fontWeight: "bold",
     marginBottom: 20,
   },
+  infoCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    width: '100%',
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: '#eef4ff',
+    marginBottom: 12,
+  },
+  infoIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 9,
+    backgroundColor: '#4f46e5',
+  },
+  infoTitle: {
+    fontSize: 18,
+    fontWeight: '700',
+    color: '#111827',
+  },
+  infoDesc: {
+    fontSize: 14,
+    color: '#6b7280',
+    marginTop: 2,
+  },
   analyzingText: {
     color: "#007AFF",
     fontSize: 16,
@@ -567,9 +664,27 @@ const styles = StyleSheet.create({
     marginBottom: 10,
     textAlign: "center",
   },
+  primaryCta: {
+    width: '100%',
+    paddingVertical: 16,
+    backgroundColor: '#0ea5e9',
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  primaryCtaText: {
+    color: '#fff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
   disabledButton: {
     backgroundColor: "#666",
     opacity: 0.5,
+  },
+  permissionHint: {
+    textAlign: 'center',
+    color: '#9ca3af',
+    marginTop: 12,
   },
   modalBackdrop: {
     flex: 1,
