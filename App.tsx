@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState, useEffect, useRef, useMemo } from "react";
 import {  StyleSheet,
   Text,
   TouchableOpacity,
@@ -10,6 +10,7 @@ import {  StyleSheet,
   ActivityIndicator,
 } from "react-native";
 import { Linking, Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { CameraView, useCameraPermissions } from "expo-camera";
 
 export default function QRInterfaceWrapper() {
@@ -27,6 +28,22 @@ export default function QRInterfaceWrapper() {
   const [reportSending, setReportSending] = useState(false);
   const [coords, setCoords] = useState<{lat: number; lng: number} | null>(null);
 
+  const apiBaseUrl = useMemo(() => {
+    const fromEnv = process.env.EXPO_PUBLIC_API_URL;
+    if (fromEnv && /^https?:\/\//.test(fromEnv)) return fromEnv.replace(/\/$/, '');
+    // Try to derive from Metro host (works on real device in same LAN)
+    const hostUri = (Constants as any)?.expoConfig?.hostUri || (Constants as any)?.manifest?.debuggerHost;
+    if (hostUri && typeof hostUri === 'string') {
+      const host = hostUri.split(':')[0];
+      if (host && host !== 'localhost' && host !== '127.0.0.1') {
+        return `http://${host}:3000`;
+      }
+    }
+    // Fallback to localhost (emulator only)
+    if (Platform.OS === 'ios') return 'http://127.0.0.1:3000';
+    return 'http://10.0.2.2:3000'; // Android emulator
+  }, []);
+
   useEffect(() => {
     requestPermission();
   }, []);
@@ -42,13 +59,13 @@ export default function QRInterfaceWrapper() {
 
     try {
       console.log("🌐 백엔드 URL 검사 요청 시작...");
-      console.log("📤 요청 URL:", "http://192.168.10.162:3000/scan");
+      console.log("📤 요청 URL:", `${apiBaseUrl}/scan`);
       console.log("📤 요청 데이터:", { url: data });
       
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 60000); // 60초 타임아웃
       
-      const response = await fetch("http://192.168.10.162:3000/scan", {
+      const response = await fetch(`${apiBaseUrl}/scan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url: data }),
@@ -126,7 +143,7 @@ export default function QRInterfaceWrapper() {
     try {
       setReportSending(true);
       const payload = { url: qrData, note: reportNote, location: coords };
-      const res = await fetch("http://192.168.10.162:3000/report", {
+      const res = await fetch(`${apiBaseUrl}/report`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload)
@@ -200,7 +217,7 @@ export default function QRInterfaceWrapper() {
           </View>
         </View>
 
-        {showReports && <MapScreen onClose={() => setShowReports(false)} />}
+        {showReports && <MapScreen apiBaseUrl={apiBaseUrl} onClose={() => setShowReports(false)} />}
       </SafeAreaView>
     );
   }
@@ -275,7 +292,7 @@ export default function QRInterfaceWrapper() {
   );
 }
 
-function MapScreen({ onClose }: { onClose: () => void }) {
+function MapScreen({ onClose, apiBaseUrl }: { onClose: () => void; apiBaseUrl: string }) {
   const [loading, setLoading] = useState(true);
   const [reports, setReports] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -285,7 +302,7 @@ function MapScreen({ onClose }: { onClose: () => void }) {
     (async () => {
       try {
         setLoading(true);
-        const res = await fetch("http://192.168.10.162:3000/reports");
+        const res = await fetch(`${apiBaseUrl}/reports`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         if (!aborted) setReports(Array.isArray(json.reports) ? json.reports : []);
@@ -378,7 +395,7 @@ function MapScreen({ onClose }: { onClose: () => void }) {
   );
 }
 
-function ReportsScreen({ onClose }: { onClose: () => void }) {
+function ReportsScreen({ onClose, apiBaseUrl }: { onClose: () => void; apiBaseUrl: string }) {
   const [loading, setLoading] = useState(true);
   const [reports, setReports] = useState<any[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -389,7 +406,7 @@ function ReportsScreen({ onClose }: { onClose: () => void }) {
     (async () => {
       try {
         setLoading(true);
-        const res = await fetch("http://192.168.10.162:3000/reports");
+        const res = await fetch(`${apiBaseUrl}/reports`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const json = await res.json();
         if (!aborted) setReports(Array.isArray(json.reports) ? json.reports : []);
