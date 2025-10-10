@@ -1,8 +1,18 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
+// 간단 CORS 허용 (모바일 앱 호출용)
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.sendStatus(200);
+  next();
+});
 
 // ===== 설정 =====
 const PORT = process.env.PORT || 3000;
@@ -211,6 +221,15 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
   return result;
 }
 
+// ===== 신고 저장소 초기화 =====
+const DATA_DIR = path.join(__dirname, 'data');
+const REPORTS_FILE = path.join(DATA_DIR, 'reports.json');
+function ensureReportStore() {
+  try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
+  try { if (!fs.existsSync(REPORTS_FILE)) fs.writeFileSync(REPORTS_FILE, '[]', 'utf8'); } catch {}
+}
+ensureReportStore();
+
 // ===== API 엔드포인트 =====
 app.post('/scan', async (req, res) => {
   console.log('📨 /scan 요청 받음:', req.body);
@@ -276,7 +295,25 @@ app.post('/scan', async (req, res) => {
     const evalDetected = await page.evaluate(() => !!window.__evalDetected).catch(()=>false);
     const base64EvalDetected = await page.evaluate(() => !!window.__base64EvalDetected).catch(()=>false);
 
-    const analysis = await analyzePage(page, url, evalDetected, base64EvalDetected);
+    let analysis = await analyzePage(page, url, evalDetected, base64EvalDetected);
+
+    // 2단계 심화 분석: 1차가 "주의"이면 추가 대기 후 재분석하여 더 위험 신호 포착
+    let analysisStage = 'fast';
+    if (analysis.risk === '⚠️ 주의') {
+      analysisStage = 'deep';
+      await delay(5000);
+      const eval2 = await page.evaluate(() => !!window.__evalDetected).catch(()=>false);
+      const base642 = await page.evaluate(() => !!window.__base64EvalDetected).catch(()=>false);
+      const analysisDeep = await analyzePage(page, url, eval2 || evalDetected, base642 || base64EvalDetected);
+      // 더 높은 위험도/점수를 채택
+      if (analysisDeep.score > analysis.score) analysis = analysisDeep;
+      else if (analysisDeep.risk === '🚨 위험' && analysis.risk !== '🚨 위험') analysis = analysisDeep;
+    }
+
+    // 위험도 재계산(점수 변경 반영)
+    if (analysis.score <= 15) analysis.risk = '✅ 안전';
+    else if (analysis.score <= 35) analysis.risk = '⚠️ 주의';
+    else analysis.risk = '🚨 위험';
 
     await browser.close();
     
@@ -284,7 +321,8 @@ app.post('/scan', async (req, res) => {
     const response = {
       ...analysis,
       safe: analysis.risk === '✅ 안전',
-      reason: analysis.risk + (analysis.reasons.length > 0 ? ' - ' + analysis.reasons.join(', ') : '')
+      reason: analysis.risk + (analysis.reasons.length > 0 ? ' - ' + analysis.reasons.join(', ') : ''),
+      analysisStage
     };
     
     console.log('📊 분석 결과:', response);
@@ -293,6 +331,42 @@ app.post('/scan', async (req, res) => {
     console.error('❌ 분석 중 오류:', err);
     if (browser) try { await browser.close(); } catch {}
     res.status(500).json({ error: '검사 중 오류', detail: err.message });
+  }
+});
+
+// 피싱 신고 제출
+app.post('/report', (req, res) => {
+  try {
+    const { url, note, location } = req.body || {};
+    if (!url) return res.status(400).json({ error: 'url은 필수입니다' });
+    ensureReportStore();
+    let list = [];
+    try { list = JSON.parse(fs.readFileSync(REPORTS_FILE, 'utf8')); } catch {}
+    const record = {
+      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
+      url: String(url),
+      note: typeof note === 'string' ? note.slice(0, 500) : undefined,
+      location: location && typeof location === 'object' ? {
+        lat: Number(location.lat), lng: Number(location.lng)
+      } : null,
+      createdAt: new Date().toISOString()
+    };
+    list.push(record);
+    fs.writeFileSync(REPORTS_FILE, JSON.stringify(list, null, 2), 'utf8');
+    res.json({ ok: true, record });
+  } catch (e) {
+    res.status(500).json({ error: '신고 저장 실패', detail: String(e && e.message || e) });
+  }
+});
+
+// 신고 목록 조회 (간단 제공)
+app.get('/reports', (req, res) => {
+  try {
+    ensureReportStore();
+    const list = JSON.parse(fs.readFileSync(REPORTS_FILE, 'utf8'));
+    res.json({ count: Array.isArray(list) ? list.length : 0, reports: list });
+  } catch (e) {
+    res.status(500).json({ error: '신고 조회 실패', detail: String(e && e.message || e) });
   }
 });
 
