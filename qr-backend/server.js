@@ -1,5 +1,5 @@
-const express = require('express');
-const puppeteer = require('puppeteer');
+import express from 'express';
+import puppeteer from 'puppeteer';
 
 const app = express();
 app.use(express.json());
@@ -388,7 +388,21 @@ app.post('/scan', async (req, res) => {
     function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
     // 🚀 domcontentloaded로 빠른 리디렉션도 추적!
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT }).catch(()=>null);
+    try {
+      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+    } catch (err) {
+      const host = new URL(url).hostname.toLowerCase();
+      if (WHITELIST_HOSTS.has(host)) {
+        console.log('✅ 화이트리스트 도메인 접근 실패 무시:', host);
+        await browser.close();
+        return res.json({
+          safe: true,
+          reason: '✅ 신뢰 도메인 (화이트리스트, Puppeteer 차단 무시)',
+        });
+      }
+      throw err;
+    }
+    // await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT }).catch(()=>null);
     
     // 🎯 하이브리드 리디렉션 추적: 동적 대기 + 안전장치!
     const REDIRECT_SETTLE_TIME = 2000;  // 2초간 리디렉션 없으면 끝!
@@ -444,7 +458,12 @@ app.post('/scan', async (req, res) => {
     };
     
     console.log('📊 분석 결과:', response);
-    res.json(response);
+    if (analysis.risk === '✅ 안전') {
+      console.log('✅ 안전 사이트입니다.');
+      return res.json({ safe: true, url, reason: response.reason });
+    } else {
+      return res.json(response);
+    }
   } catch (err) {
     console.error('❌ 분석 중 오류:', err);
     if (browser) try { await browser.close(); } catch {}
