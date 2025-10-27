@@ -98,11 +98,11 @@ export default function QRInterfaceWrapper() {
       console.log("🔍 reason(derived) 값:", reason);
 
       if (safe) {
-        Alert.alert(
-          "✅ 안전한 링크입니다", 
-          "이 QR 코드는 안전한 것으로 확인되었습니다.",
-          [{ text: "확인" }]
-        );
+        console.log(
+          "✅ 안전한 링크입니다", data);
+          Linking.openURL(data)
+          
+
       } else if (safe === false) {
         Alert.alert(
           "⚠️ 주의! 피싱 사이트로 의심됩니다!", 
