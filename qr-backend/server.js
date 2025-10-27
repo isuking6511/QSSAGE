@@ -1,23 +1,12 @@
 const express = require('express');
 const puppeteer = require('puppeteer');
-const fs = require('fs');
-const path = require('path');
 
 const app = express();
 app.use(express.json());
-// 간단 CORS 허용 (모바일 앱 호출용)
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(200);
-  next();
-});
 
 // ===== 설정 =====
 const PORT = process.env.PORT || 3000;
-const NAV_TIMEOUT = 10000;  // 15초 -> 10초로 단축
-const POST_NAV_WAIT = 1500; // 2.5초 -> 1.5초로 단축
+const NAV_TIMEOUT = 10000;  // 페이지 로딩 최대 대기 시간
 
 const WHITELIST_HOSTS = new Set([
   // 검색엔진
@@ -55,7 +44,7 @@ const WHITELIST_HOSTS = new Set([
 ]);
 
 const WEIGHTS = {
-  evalDetected: 25,           // 악성 코드 탐지는 높은 가중치 유지
+  evalDetected: 20,           // eval 50자 이상 = 의심 (정상 사이트는 거의 안 씀)
   base64EvalDetected: 30,     // base64 악성 코드는 더 높은 가중치
   hasPasswordInput: 8,        // 로그인 페이지는 정상적이므로 점수 대폭 감소
   formsToExternal: 12,        // 외부 폼도 점수 감소 (광고/분석 도구 등)
@@ -64,10 +53,11 @@ const WEIGHTS = {
   httpsMissing: 3,            // HTTP 사이트 점수 감소 (많은 사이트가 아직 HTTP)
   hiddenIframes: 10,          // 숨겨진 iframe은 여전히 의심스러움
   externalScriptMany: 4,      // 외부 스크립트 점수 감소 (CDN, 광고 등)
+  externalImagesMany: 5,      // 외부 이미지 많음 (급조 피싱 의심, 낮은 점수)
   hostIsIP: 35,               // IP 주소는 여전히 높은 위험
   punycode: 25,               // Punycode는 여전히 의심스러움
   isShortener: 8,             // 단축 URL 점수 감소 (많이 사용됨)
-  externalFormWithPasswordBonus: 15  // 외부 폼+비밀번호는 여전히 위험하지만 점수 감소
+  externalFormWithPasswordBonus: 30  // 외부 폼+비밀번호 = 피싱 핵심 패턴! 가중치 대폭 상승
 };
 
 // 유틸: URL 보정
@@ -84,31 +74,23 @@ function normalizeUrlCandidate(u) {
 }
 
 // ===== 페이지 분석 함수 =====
-async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) {
+async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected, actualRedirectCount, actualFinalUrl) {
   const result = {
     originalUrl,
-    finalUrl: originalUrl,
+    finalUrl: actualFinalUrl || originalUrl,  // 실제 최종 URL 사용!
     score: 0,
     reasons: [],
-    redirects: 0,
+    redirects: actualRedirectCount || 0,  // 실제 리디렉션 횟수!
     formsToExternal: [],
     hasPasswordInput: false,
     hiddenIframes: 0,
     externalScriptCount: 0,
+    externalImageCount: 0,
     isShortener: false,
     hostIsIP: false,
     punycode: false,
     risk: 'unknown'
   };
-
-  try {
-    const nav = await page.goto(originalUrl, { waitUntil: 'networkidle2', timeout: NAV_TIMEOUT }).catch(()=>null);
-    result.finalUrl = page.url() || originalUrl;
-    if (nav) {
-      const chain = nav.request().redirectChain();
-      result.redirects = chain.length;
-    }
-  } catch {}
 
   const domInfo = await page.evaluate(() => {
     const forms = Array.from(document.querySelectorAll('form')).map(f => ({
@@ -124,8 +106,15 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
       };
     });
     const scripts = Array.from(document.scripts).map(s => s.src || '');
-    return { forms, passwordExists, iframes, scripts };
-  });
+    const images = Array.from(document.querySelectorAll('img')).map(img => img.src || '');
+    return { forms, passwordExists, iframes, scripts, images };
+  }).catch(() => ({
+    forms: [],
+    passwordExists: false,
+    iframes: [],
+    scripts: [],
+    images: []
+  }));
 
   try {
     const parsedFinal = new URL(result.finalUrl);
@@ -151,6 +140,14 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
       return false;
     }
   }).length;
+  result.externalImageCount = domInfo.images.filter(img => {
+    try {
+      const u = new URL(img, result.finalUrl);
+      return u.hostname !== (new URL(result.finalUrl)).hostname;
+    } catch {
+      return false;
+    }
+  }).length;
 
   try {
     const parsedOrig = new URL(originalUrl);
@@ -158,12 +155,21 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
     result.host = host;
     if (/^\d+\.\d+\.\d+\.\d+$/.test(host)) result.hostIsIP = true;
     if (host.startsWith('xn--')) result.punycode = true;
-    const shorteners = ['bit.ly','tinyurl.com','t.co','goo.gl','ow.ly','is.gd','tiny.one','rb.gy'];
+    const shorteners = ['bit.ly','tinyurl.com','t.co','goo.gl','ow.ly','is.gd','tiny.one','rb.gy','qrfy.io'];
     result.isShortener = shorteners.includes(host);
     result.isHttps = parsedOrig.protocol === 'https:';
   } catch {}
 
   // === 점수 계산 ===
+  
+  // 🚨 Chrome 에러 페이지 감지 (페이지 로딩 실패 = 차단/악성 사이트 의심)
+  if (result.finalUrl.startsWith('chrome-error://') || 
+      result.finalUrl.startsWith('about:') ||
+      result.finalUrl.includes('chromewebdata')) {
+    result.score += 30;
+    result.reasons.push('🚨 페이지 로딩 실패 (차단된 악성 사이트 의심)');
+  }
+  
   if (evalDetected) { result.score += WEIGHTS.evalDetected; result.reasons.push('eval() 의심 코드 탐지'); }
   if (base64EvalDetected) { result.score += WEIGHTS.base64EvalDetected; result.reasons.push('base64->eval 의심'); }
   if (!result.isHttps) { result.score += WEIGHTS.httpsMissing; result.reasons.push('HTTPS 미사용'); }
@@ -184,14 +190,30 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
     }
   }
 
-  if (result.hiddenIframes > 0) { result.score += WEIGHTS.hiddenIframes; result.reasons.push(`숨긴 iframe ${result.hiddenIframes}개`); }
+  if (result.hiddenIframes > 0) { 
+    result.score += WEIGHTS.hiddenIframes; 
+    result.reasons.push(`숨긴 iframe ${result.hiddenIframes}개`); 
+    
+    // 🎯 리디렉션 + 숨긴 iframe 조합 (단계별 위험도)
+    if (result.redirects >= 2) {
+      // 리디렉션 2회 이상 + iframe = 확실한 피싱!
+      result.score += 50;
+      result.reasons.push('🚨 다중 리디렉션(2회+) + 숨긴 iframe (피싱 확실)');
+    } else if (result.redirects === 1) {
+      // 리디렉션 1회 + iframe = 의심
+      result.score += 30;
+      result.reasons.push('⚠️ 리디렉션 + 숨긴 iframe (피싱 의심)');
+    }
+  }
+  
   if (result.externalScriptCount > 10) { result.score += WEIGHTS.externalScriptMany; result.reasons.push(`외부 스크립트 다수 (${result.externalScriptCount})`); }
+  if (result.externalImageCount > 5) { result.score += WEIGHTS.externalImagesMany; result.reasons.push(`외부 이미지 다수 (${result.externalImageCount})`); }
   if (result.hostIsIP) { result.score += WEIGHTS.hostIsIP; result.reasons.push('호스트가 IP 주소'); }
   if (result.punycode) { result.score += WEIGHTS.punycode; result.reasons.push('Punycode 도메인 (xn--)'); }
   if (result.isShortener) { result.score += WEIGHTS.isShortener; result.reasons.push('단축 URL 사용'); }
 
   if (result.formsToExternal.length) {
-    result.score += WEIGHTS.formsToExternal * 0.4;  // 가중치 더 감소
+    result.score += WEIGHTS.formsToExternal * 0.4;  //
     result.reasons.push(`외부 폼 제출 (${result.formsToExternal.length})`);
     if (result.hasPasswordInput) {
       result.score += WEIGHTS.externalFormWithPasswordBonus;
@@ -207,9 +229,10 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
   try {
     const hostLower = (new URL(originalUrl)).hostname.toLowerCase();
     if (WHITELIST_HOSTS.has(hostLower) || WHITELIST_HOSTS.has(result.finalHostname)) {
-      const reduction = Math.min(50, result.score);  // 화이트리스트 보정 강화
-      result.score = Math.max(0, result.score - reduction);
-      result.reasons.push(`화이트리스트 도메인 보정 (-${reduction})`);
+      // 🎯 화이트리스트는 거의 모든 점수 무시! (eval/base64 제외하고는 안전)
+      const originalScore = result.score;
+      result.score = Math.max(0, result.score - 200);  // 사실상 0점으로 만듦
+      result.reasons.push(`✅ 신뢰 도메인 보정 (-${originalScore - result.score})`);
       result.whitelisted = true;
     }
   } catch {}
@@ -220,15 +243,6 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected) 
 
   return result;
 }
-
-// ===== 신고 저장소 초기화 =====
-const DATA_DIR = path.join(__dirname, 'data');
-const REPORTS_FILE = path.join(DATA_DIR, 'reports.json');
-function ensureReportStore() {
-  try { if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true }); } catch {}
-  try { if (!fs.existsSync(REPORTS_FILE)) fs.writeFileSync(REPORTS_FILE, '[]', 'utf8'); } catch {}
-}
-ensureReportStore();
 
 // ===== API 엔드포인트 =====
 app.post('/scan', async (req, res) => {
@@ -262,6 +276,23 @@ app.post('/scan', async (req, res) => {
     });
     const page = await browser.newPage();
 
+    // 🔍 리디렉션 추적
+    let actualRedirectCount = 0; //리디렉션 카운팅
+    let redirectDestinations = [url]; //거쳐간 URL
+    let lastNavigationTime = Date.now(); //마지막 리디렉션 발생 시간
+    
+    page.on('framenavigated', (frame) => {
+      if (frame === page.mainFrame()) {
+        const newUrl = frame.url(); //새로 이동한 URL
+        if (newUrl !== redirectDestinations[redirectDestinations.length - 1]) { //URL 다르면 리디렉션 발생.
+          actualRedirectCount++; 
+          redirectDestinations.push(newUrl);
+          lastNavigationTime = Date.now();
+          console.log(`리디렉션 ${actualRedirectCount}: ${newUrl}`);
+        }
+      }
+    });
+
     await page.evaluateOnNewDocument(() => {
       const originalEval = window.eval;
       const originalAtob = window.atob;
@@ -269,19 +300,86 @@ app.post('/scan', async (req, res) => {
       window.__base64EvalDetected = false;
       window.eval = function (code) {
         try {
-          const suspicious = ['location.href','window.open','document.write','atob','unescape'];
-          let evalScore = suspicious.filter(k => String(code).includes(k)).length * 2;
-          if (String(code).length > 300) evalScore++;
-          if (/[_$a-zA-Z]{5,}\d{2,}/.test(String(code))) evalScore += 2;
-          if (evalScore >= 3) window.__evalDetected = true;
+          // eval 자체가 의심스러움! 정상 사이트는 거의 안 씀
+          const codeStr = String(code);
+          
+          // 50자 이상의 eval 코드는 무조건 의심!
+          if (codeStr.length > 50) {
+            window.__evalDetected = true;
+          }
         } catch {}
         return originalEval.apply(this, arguments);
       };
       window.atob = function (encoded) {
         const decoded = originalAtob.apply(this, arguments);
-        if (/(eval|document\.write|window\.open|location\.href)/i.test(String(decoded))) {
+        const decodedStr = String(decoded);
+        
+        // 화이트해커 레벨 탐지 🔥
+        let suspicionScore = 0;
+        
+        // 🚨 치명적인 조합 패턴 우선 체크 (즉시 탐지!)
+        
+        // 1. eval + location 조합 (리디렉션 공격)
+        if ((/eval/i.test(decodedStr) && /location/i.test(decodedStr)) ||
+            /eval.*location|location.*eval/i.test(decodedStr)) {
+          suspicionScore += 15;  // 거의 100% 악성!
+        }
+        
+        // 2. eval + document.write 조합 (페이지 덮어쓰기 공격)
+        if ((/eval/i.test(decodedStr) && /document\.write/i.test(decodedStr)) ||
+            /eval.*document\.write|document\.write.*eval/i.test(decodedStr)) {
+          suspicionScore += 15;  // 페이지 하이재킹!
+        }
+        
+        // 3. cookie + (fetch|XMLHttpRequest) 조합 (쿠키 탈취)
+        if (/cookie/i.test(decodedStr) && (/fetch|XMLHttpRequest/i.test(decodedStr))) {
+          suspicionScore += 12;  // 쿠키 전송 공격!
+        }
+        
+        // 4. iframe + (hidden|display.*none|visibility.*hidden) 조합 (숨은 프레임 공격)
+        if (/iframe/i.test(decodedStr) && 
+            /(hidden|display\s*:\s*none|visibility\s*:\s*hidden)/i.test(decodedStr)) {
+          suspicionScore += 10;  // 숨은 악성 프레임!
+        }
+        
+        // 5. 일반 위험 키워드 체크
+        const dangerKeywords = [
+          /eval/i, /location/i, /document\./i, /window\./i, 
+          /\.href/i, /\.write/i, /\.open/i, /\.replace/i,
+          /script/i, /iframe/i, /fetch/i, /XMLHttpRequest/i,
+          /cookie/i, /localStorage/i, /sessionStorage/i
+        ];
+        suspicionScore += dangerKeywords.filter(pattern => pattern.test(decodedStr)).length * 2;
+        
+        // 6. 16진수/유니코드 인코딩 숨김 (\\x, \\u)
+        if (/\\x[0-9a-f]{2}|\\u[0-9a-f]{4}/i.test(decodedStr)) suspicionScore += 4;
+        
+        // 7. 문자열 분해 패턴 (난독화)
+        if (/['"][+]['"]|['"][\s]*\+[\s]*['"]/g.test(decodedStr)) suspicionScore += 3;
+        
+        // 8. 코드 길이 체크
+        if (decodedStr.length > 100) suspicionScore += 2;
+        if (decodedStr.length > 300) suspicionScore += 4;
+        
+        // 9. 다중 Base64 인코딩 (atob 안에 atob)
+        if (/atob\s*\(/i.test(decodedStr)) suspicionScore += 8;  // 다중 인코딩은 매우 의심!
+        
+        // 10. 난독화 변수명 패턴
+        if (/[_$][a-z0-9]{3,}\d{2,}/i.test(decodedStr)) suspicionScore += 3;
+        
+        // 11. 배열/객체 접근 난독화 (window['location'], document['write'])
+        if (/\[['"](location|href|write|cookie|eval)['"]\]/i.test(decodedStr)) suspicionScore += 5;
+        
+        // 12. 정상 광고 스크립트 예외 처리 (오탐 방지)
+        if (/google-analytics|gtag|_ga|facebook|fbevents|_fbq|doubleclick/i.test(decodedStr)) {
+          suspicionScore = Math.max(0, suspicionScore - 6);  // 광고는 점수 감소
+        }
+        
+        // 의심 점수 8점 이상이면 탐지! (기준 상향)
+        if (suspicionScore >= 8) {
           window.__base64EvalDetected = true;
         }
+        
         return decoded;
       };
     });
@@ -289,31 +387,52 @@ app.post('/scan', async (req, res) => {
     // helper delay (waitForTimeout 대체)
     function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-    await page.goto(url, { waitUntil: 'load', timeout: NAV_TIMEOUT }).catch(()=>null);
-    await delay(POST_NAV_WAIT);
+    // 🚀 domcontentloaded로 빠른 리디렉션도 추적!
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT }).catch(()=>null);
+    
+    // 🎯 하이브리드 리디렉션 추적: 동적 대기 + 안전장치!
+    const REDIRECT_SETTLE_TIME = 2000;  // 2초간 리디렉션 없으면 끝!
+    const MAX_WAIT_TIME = 15000;  // max 15초 대기
+    const startWaitTime = Date.now();
+    
+    // 1단계: 기본 동적 대기
+    while (Date.now() - lastNavigationTime < REDIRECT_SETTLE_TIME) {
+      if (Date.now() - startWaitTime > MAX_WAIT_TIME) {
+        console.log('⏰ 최대 대기 시간 초과');
+        break;
+      }
+      await delay(500);
+    }
+    
+    console.log(`리디렉션 1차 완료! (총 ${actualRedirectCount}회)`);
+    
+    // 2단계: 추가 안전 대기 (late 리디렉션 감지)
+    const countBeforeSafetyWait = actualRedirectCount;
+    await delay(1000);  // 1초 더 대기
+    
+    // 3단계: 1초 동안 추가 리디렉션 발생했는지
+    if (actualRedirectCount > countBeforeSafetyWait) {
+      console.log('늦은 리디렉션 감지! 재대기 시작...');
+      
+      // 다시 동적 대기
+      while (Date.now() - lastNavigationTime < REDIRECT_SETTLE_TIME) {
+        if (Date.now() - startWaitTime > MAX_WAIT_TIME) {
+          console.log('최대 대기 시간 초과');
+          break;
+        }
+        await delay(500);
+      }
+      
+      console.log(`추가 리디렉션 완료! (총 ${actualRedirectCount}회)`);
+    }
+  
+    console.log(`최종 분석 시작! (총 리디렉션: ${actualRedirectCount}회, 총 대기: ${Math.floor((Date.now() - startWaitTime) / 1000)}초)`);
 
     const evalDetected = await page.evaluate(() => !!window.__evalDetected).catch(()=>false);
     const base64EvalDetected = await page.evaluate(() => !!window.__base64EvalDetected).catch(()=>false);
 
-    let analysis = await analyzePage(page, url, evalDetected, base64EvalDetected);
-
-    // 2단계 심화 분석: 1차가 "주의"이면 추가 대기 후 재분석하여 더 위험 신호 포착
-    let analysisStage = 'fast';
-    if (analysis.risk === '⚠️ 주의') {
-      analysisStage = 'deep';
-      await delay(5000);
-      const eval2 = await page.evaluate(() => !!window.__evalDetected).catch(()=>false);
-      const base642 = await page.evaluate(() => !!window.__base64EvalDetected).catch(()=>false);
-      const analysisDeep = await analyzePage(page, url, eval2 || evalDetected, base642 || base64EvalDetected);
-      // 더 높은 위험도/점수를 채택
-      if (analysisDeep.score > analysis.score) analysis = analysisDeep;
-      else if (analysisDeep.risk === '🚨 위험' && analysis.risk !== '🚨 위험') analysis = analysisDeep;
-    }
-
-    // 위험도 재계산(점수 변경 반영)
-    if (analysis.score <= 15) analysis.risk = '✅ 안전';
-    else if (analysis.score <= 35) analysis.risk = '⚠️ 주의';
-    else analysis.risk = '🚨 위험';
+    // 실제 리디렉션 정보 전달
+    const analysis = await analyzePage(page, url, evalDetected, base64EvalDetected, actualRedirectCount, redirectDestinations[redirectDestinations.length - 1]);
 
     await browser.close();
     
@@ -321,8 +440,7 @@ app.post('/scan', async (req, res) => {
     const response = {
       ...analysis,
       safe: analysis.risk === '✅ 안전',
-      reason: analysis.risk + (analysis.reasons.length > 0 ? ' - ' + analysis.reasons.join(', ') : ''),
-      analysisStage
+      reason: analysis.risk + (analysis.reasons.length > 0 ? ' - ' + analysis.reasons.join(', ') : '')
     };
     
     console.log('📊 분석 결과:', response);
@@ -331,42 +449,6 @@ app.post('/scan', async (req, res) => {
     console.error('❌ 분석 중 오류:', err);
     if (browser) try { await browser.close(); } catch {}
     res.status(500).json({ error: '검사 중 오류', detail: err.message });
-  }
-});
-
-// 피싱 신고 제출
-app.post('/report', (req, res) => {
-  try {
-    const { url, note, location } = req.body || {};
-    if (!url) return res.status(400).json({ error: 'url은 필수입니다' });
-    ensureReportStore();
-    let list = [];
-    try { list = JSON.parse(fs.readFileSync(REPORTS_FILE, 'utf8')); } catch {}
-    const record = {
-      id: Date.now().toString(36) + Math.random().toString(36).slice(2, 8),
-      url: String(url),
-      note: typeof note === 'string' ? note.slice(0, 500) : undefined,
-      location: location && typeof location === 'object' ? {
-        lat: Number(location.lat), lng: Number(location.lng)
-      } : null,
-      createdAt: new Date().toISOString()
-    };
-    list.push(record);
-    fs.writeFileSync(REPORTS_FILE, JSON.stringify(list, null, 2), 'utf8');
-    res.json({ ok: true, record });
-  } catch (e) {
-    res.status(500).json({ error: '신고 저장 실패', detail: String(e && e.message || e) });
-  }
-});
-
-// 신고 목록 조회 (간단 제공)
-app.get('/reports', (req, res) => {
-  try {
-    ensureReportStore();
-    const list = JSON.parse(fs.readFileSync(REPORTS_FILE, 'utf8'));
-    res.json({ count: Array.isArray(list) ? list.length : 0, reports: list });
-  } catch (e) {
-    res.status(500).json({ error: '신고 조회 실패', detail: String(e && e.message || e) });
   }
 });
 

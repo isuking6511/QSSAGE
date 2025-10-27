@@ -36,6 +36,7 @@
       "expo-barcode-scanner"
     ],
     "extra": {
+      "EXPO_PUBLIC_API_URL": "",
       "eas": {
         "projectId": "e65f9f71-3662-46fb-88b1-9912b515c221"
       }

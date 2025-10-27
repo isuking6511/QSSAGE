@@ -16,7 +16,6 @@ import { CameraView, useCameraPermissions } from "expo-camera";
 export default function QRInterfaceWrapper() {
   const [permission, requestPermission] = useCameraPermissions();
   const [showScanner, setShowScanner] = useState(false);
-  const [showReports, setShowReports] = useState(false);
   const [scanned, setScanned] = useState(false);
   const [qrData, setQrData] = useState<string | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -29,8 +28,11 @@ export default function QRInterfaceWrapper() {
   const [coords, setCoords] = useState<{lat: number; lng: number} | null>(null);
 
   const apiBaseUrl = useMemo(() => {
+    // 1) app.json(expo.extra) > 2) process.env
+    const fromExtra = (Constants as any)?.expoConfig?.extra?.EXPO_PUBLIC_API_URL;
     const fromEnv = process.env.EXPO_PUBLIC_API_URL;
-    if (fromEnv && /^https?:\/\//.test(fromEnv)) return fromEnv.replace(/\/$/, '');
+    const fromConfig = fromExtra || fromEnv;
+    if (fromConfig && /^https?:\/\//.test(fromConfig)) return String(fromConfig).replace(/\/$/, '');
     // Try to derive from Metro host (works on real device in same LAN)
     const hostUri = (Constants as any)?.expoConfig?.hostUri || (Constants as any)?.manifest?.debuggerHost;
     if (hostUri && typeof hostUri === 'string') {
@@ -96,11 +98,26 @@ export default function QRInterfaceWrapper() {
       console.log("🔍 reason(derived) 값:", reason);
 
       if (safe) {
-        Alert.alert("🟢 안전한 링크입니다", reason || data);
+        Alert.alert(
+          "✅ 안전한 링크입니다", 
+          "이 QR 코드는 안전한 것으로 확인되었습니다.",
+          [{ text: "확인" }]
+        );
       } else if (safe === false) {
-        Alert.alert("🚨 피싱 위험이 있는 링크입니다!", reason || data);
+        Alert.alert(
+          "⚠️ 주의! 피싱 사이트로 의심됩니다!", 
+          "이 링크는 위험할 수 있습니다. 접속을 권장하지 않습니다.",
+          [
+            { text: "취소", style: "cancel" },
+            { text: "그래도 열기", onPress: () => Linking.openURL(data) }
+          ]
+        );
       } else {
-        Alert.alert("ℹ️ 결과 확인 필요", reason || data);
+        Alert.alert(
+          "ℹ️ 검사 결과를 확인할 수 없습니다", 
+          "알 수 없는 결과입니다. 주의해서 접속하세요.",
+          [{ text: "확인" }]
+        );
       }
     } catch (error) {
       console.error("❌ 오류 발생:", error);
@@ -208,16 +225,9 @@ export default function QRInterfaceWrapper() {
                 <Text style={styles.primaryCtaText}>스캔 시작하기</Text>
               </View>
             </TouchableOpacity>
-            <TouchableOpacity onPress={() => setShowReports(true)} activeOpacity={0.85}>
-              <View style={[styles.primaryCta, { marginTop: 12 }]}>
-                <Text style={styles.primaryCtaText}>숨은 피싱 장소 찾기</Text>
-              </View>
-            </TouchableOpacity>
             <Text style={styles.permissionHint}>카메라 권한이 필요합니다</Text>
           </View>
         </View>
-
-        {showReports && <MapScreen apiBaseUrl={apiBaseUrl} onClose={() => setShowReports(false)} />}
       </SafeAreaView>
     );
   }
@@ -292,254 +302,6 @@ export default function QRInterfaceWrapper() {
   );
 }
 
-function MapScreen({ onClose, apiBaseUrl }: { onClose: () => void; apiBaseUrl: string }) {
-  const [loading, setLoading] = useState(true);
-  const [reports, setReports] = useState<any[]>([]);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    let aborted = false;
-    (async () => {
-      try {
-        setLoading(true);
-        const res = await fetch(`${apiBaseUrl}/reports`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        if (!aborted) setReports(Array.isArray(json.reports) ? json.reports : []);
-      } catch (e) {
-        if (!aborted) setError(String(e instanceof Error ? e.message : e));
-      } finally {
-        if (!aborted) setLoading(false);
-      }
-    })();
-    return () => { aborted = true; };
-  }, []);
-
-  let MapViewComp: any = null;
-  let MarkerComp: any = null;
-  try {
-    const maps = require('react-native-maps');
-    MapViewComp = maps.default || maps.MapView;
-    MarkerComp = maps.Marker;
-  } catch (e) {
-    return (
-      <View style={styles.reportsOverlay}>
-        <View style={styles.reportsCard}>
-          <Text style={styles.modalTitle}>🗺️ 피싱 신고 지도</Text>
-          <Text style={{ marginBottom: 12 }}>지도 모듈이 설치되지 않았습니다.</Text>
-          <Text style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>
-            설치: npm i react-native-maps
-          </Text>
-          <TouchableOpacity onPress={onClose}>
-            <Text style={styles.button}>닫기</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
-
-  const points = reports.filter(r => r?.location?.lat && r?.location?.lng);
-  const initialRegion = points.length > 0 ? {
-    latitude: Number(points[0].location.lat),
-    longitude: Number(points[0].location.lng),
-    latitudeDelta: 0.05,
-    longitudeDelta: 0.05,
-  } : {
-    latitude: 37.5665, // 서울 기본
-    longitude: 126.9780,
-    latitudeDelta: 0.3,
-    longitudeDelta: 0.3,
-  };
-
-  return (
-    <View style={styles.reportsOverlay}>
-      <View style={styles.mapCard}>
-        <Text style={styles.modalTitle}>🗺️ 피싱 신고 지도</Text>
-        {loading ? (
-          <View style={{ height: 400, justifyContent: 'center', alignItems: 'center' }}>
-            <ActivityIndicator size="large" />
-            <Text style={{ marginTop: 10 }}>지도 로딩 중...</Text>
-          </View>
-        ) : error ? (
-          <View style={{ height: 400, justifyContent: 'center', alignItems: 'center' }}>
-            <Text style={{ color: 'red', textAlign: 'center' }}>불러오기 실패: {error}</Text>
-            <TouchableOpacity onPress={onClose} style={{ marginTop: 10 }}>
-              <Text style={styles.button}>닫기</Text>
-            </TouchableOpacity>
-          </View>
-        ) : (
-          <>
-            <View style={{ width: '100%', height: 400, borderRadius: 10, overflow: 'hidden', marginBottom: 10 }}>
-              <MapViewComp style={{ flex: 1 }} initialRegion={initialRegion}>
-                {points.map((r) => (
-                  <MarkerComp
-                    key={r.id}
-                    coordinate={{ latitude: Number(r.location.lat), longitude: Number(r.location.lng) }}
-                    title="피싱 신고"
-                    description={r.note || r.url}
-                    pinColor="red"
-                  />
-                ))}
-              </MapViewComp>
-            </View>
-            <Text style={{ fontSize: 14, color: '#666', marginBottom: 10 }}>
-              총 {points.length}개의 피싱 신고 위치
-            </Text>
-            <TouchableOpacity onPress={onClose}>
-              <Text style={styles.button}>닫기</Text>
-            </TouchableOpacity>
-          </>
-        )}
-      </View>
-    </View>
-  );
-}
-
-function ReportsScreen({ onClose, apiBaseUrl }: { onClose: () => void; apiBaseUrl: string }) {
-  const [loading, setLoading] = useState(true);
-  const [reports, setReports] = useState<any[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [showMap, setShowMap] = useState(false);
-
-  useEffect(() => {
-    let aborted = false;
-    (async () => {
-      try {
-        setLoading(true);
-        const res = await fetch(`${apiBaseUrl}/reports`);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const json = await res.json();
-        if (!aborted) setReports(Array.isArray(json.reports) ? json.reports : []);
-      } catch (e) {
-        if (!aborted) setError(String(e instanceof Error ? e.message : e));
-      } finally {
-        if (!aborted) setLoading(false);
-      }
-    })();
-    return () => { aborted = true; };
-  }, []);
-
-  return (
-    <View style={styles.reportsOverlay}>
-      <View style={styles.reportsCard}>
-        <Text style={styles.modalTitle}>🗺️ 신고 목록</Text>
-        {loading ? (
-          <ActivityIndicator />
-        ) : error ? (
-          <Text style={{ color: 'red' }}>불러오기 실패: {error}</Text>
-        ) : (
-          <View style={{ maxHeight: 360 }}>
-            {reports.length === 0 ? (
-              <Text>아직 신고가 없습니다.</Text>
-            ) : (
-              reports.map((r) => (
-                <View key={r.id} style={styles.reportItem}>
-                  <Text numberOfLines={1} style={styles.reportUrl}>{r.url}</Text>
-                  <Text style={styles.reportMeta}>
-                    {r.location?.lat && r.location?.lng
-                      ? `(${r.location.lat.toFixed(5)}, ${r.location.lng.toFixed(5)})`
-                      : '좌표 없음'} • {new Date(r.createdAt).toLocaleString()}
-                  </Text>
-                  {r.note ? <Text style={styles.reportNote}>{r.note}</Text> : null}
-                  {r.location?.lat && r.location?.lng ? (
-                    <TouchableOpacity
-                      onPress={() => {
-                        const lat = Number(r.location.lat);
-                        const lng = Number(r.location.lng);
-                        const label = encodeURIComponent('신고 위치');
-                        const google = `https://www.google.com/maps/search/?api=1&query=${lat},${lng}`;
-                        const apple = `http://maps.apple.com/?ll=${lat},${lng}&q=${label}`;
-                        const url = Platform.select({ ios: apple, default: google });
-                        if (url) Linking.openURL(url);
-                      }}
-                    >
-                      <Text style={styles.button}>🧭 지도에서 열기</Text>
-                    </TouchableOpacity>
-                  ) : null}
-                </View>
-              ))
-            )}
-          </View>
-        )}
-        <View style={{ flexDirection: 'row', gap: 12 }}>
-          <TouchableOpacity onPress={onClose}>
-            <Text style={styles.button}>닫기</Text>
-          </TouchableOpacity>
-          {!loading && !error && reports.some(r => r?.location?.lat && r?.location?.lng) ? (
-            <TouchableOpacity onPress={() => setShowMap(true)}>
-              <Text style={styles.button}>🗺️ 인앱 지도에서 보기</Text>
-            </TouchableOpacity>
-          ) : null}
-        </View>
-      </View>
-      {showMap && (
-        <MapOverlay reports={reports} onClose={() => setShowMap(false)} />
-      )}
-    </View>
-  );
-}
-
-function MapOverlay({ reports, onClose }: { reports: any[]; onClose: () => void }) {
-  let MapViewComp: any = null;
-  let MarkerComp: any = null;
-  try {
-    const maps = require('react-native-maps');
-    MapViewComp = maps.default || maps.MapView;
-    MarkerComp = maps.Marker;
-  } catch (e) {
-    return (
-      <View style={styles.reportsOverlay}>
-        <View style={styles.reportsCard}>
-          <Text style={styles.modalTitle}>지도 모듈 미설치</Text>
-          <Text style={{ marginBottom: 12 }}>패키지 설치 후 이용 가능합니다.</Text>
-          <Text style={{ fontSize: 12, color: '#666', marginBottom: 12 }}>
-            설치: npm i react-native-maps
-          </Text>
-          <TouchableOpacity onPress={onClose}>
-            <Text style={styles.button}>닫기</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
-    );
-  }
-
-  const points = reports.filter(r => r?.location?.lat && r?.location?.lng);
-  const first = points[0];
-  const initialRegion = first ? {
-    latitude: Number(first.location.lat),
-    longitude: Number(first.location.lng),
-    latitudeDelta: 0.05,
-    longitudeDelta: 0.05,
-  } : {
-    latitude: 37.5665, // 서울 기본
-    longitude: 126.9780,
-    latitudeDelta: 0.3,
-    longitudeDelta: 0.3,
-  };
-
-  return (
-    <View style={styles.reportsOverlay}>
-      <View style={styles.mapCard}>
-        <Text style={styles.modalTitle}>신고 지도</Text>
-        <View style={{ width: '100%', height: 360, borderRadius: 10, overflow: 'hidden' }}>
-          <MapViewComp style={{ flex: 1 }} initialRegion={initialRegion}>
-            {points.map((r) => (
-              <MarkerComp
-                key={r.id}
-                coordinate={{ latitude: Number(r.location.lat), longitude: Number(r.location.lng) }}
-                title={r.url}
-                description={r.note || new Date(r.createdAt).toLocaleString()}
-              />
-            ))}
-          </MapViewComp>
-        </View>
-        <TouchableOpacity onPress={onClose}>
-          <Text style={styles.button}>닫기</Text>
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
-}
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
