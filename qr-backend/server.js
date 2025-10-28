@@ -1,5 +1,7 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
+import pg from 'pg';
+
 
 const app = express();
 app.use(express.json());
@@ -275,6 +277,12 @@ app.post('/scan', async (req, res) => {
       ]
     });
     const page = await browser.newPage();
+    
+app.post('/report', async (req, res) => {
+  const { url, location } = req.body;
+  await saveReport({ url, location });
+  res.json({ ok: true });
+});
 
     // 🔍 리디렉션 추적
     let actualRedirectCount = 0; //리디렉션 카운팅
@@ -317,7 +325,7 @@ app.post('/scan', async (req, res) => {
         // 화이트해커 레벨 탐지 🔥
         let suspicionScore = 0;
         
-        // 🚨 치명적인 조합 패턴 우선 체크 (즉시 탐지!)
+        // 치명적인 조합 패턴 우선 체크 (즉시 탐지!)
         
         // 1. eval + location 조합 (리디렉션 공격)
         if ((/eval/i.test(decodedStr) && /location/i.test(decodedStr)) ||
@@ -448,6 +456,11 @@ app.post('/scan', async (req, res) => {
     // 실제 리디렉션 정보 전달
     const analysis = await analyzePage(page, url, evalDetected, base64EvalDetected, actualRedirectCount, redirectDestinations[redirectDestinations.length - 1]);
 
+    // 🚨 위험하거나 ⚠️ 주의일 때 자동 신고 저장
+    if (analysis.risk !== '✅ 안전') {
+      await saveReport({ url });
+    }
+
     await browser.close();
     
     // 앱이 기대하는 형식으로 응답 변환
@@ -470,6 +483,28 @@ app.post('/scan', async (req, res) => {
     res.status(500).json({ error: '검사 중 오류', detail: err.message });
   }
 });
+//db 
+const pool = new pg.Pool({
+  host: process.env.PGHOST || 'localhost',
+  port: process.env.PGPORT || '5432',
+  user: process.env.PGUSER || 'admin',
+  password: process.env.PGPASSWORD || '1234',
+  database: process.env.PGDATABASE || 'qssage'
+});
+async function saveReport({ url, location = null }) {
+  try {
+    await pool.query(
+      'INSERT INTO reports (url, location) VALUES ($1, $2)',
+      [url, location]
+    );
+    console.log('📩 DB에 신고 저장:', url, location);
+  } catch (err) {
+    console.error('DB 저장 실패:', err.message);
+  }
+}
+
+
+
 
 // 서버 시작
 app.listen(PORT, '0.0.0.0', () => {

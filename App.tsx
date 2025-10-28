@@ -10,6 +10,7 @@ import {  StyleSheet,
   ActivityIndicator,
 } from "react-native";
 import { Linking, Platform } from 'react-native';
+import * as Location from 'expo-location';
 import Constants from 'expo-constants';
 import { CameraView, useCameraPermissions } from "expo-camera";
 
@@ -101,9 +102,32 @@ export default function QRInterfaceWrapper() {
         console.log(
           "✅ 안전한 링크입니다", data);
           Linking.openURL(data)
-          
-
       } else if (safe === false) {
+        // 🚨 피싱 의심 URL 자동 신고 및 위치 정보 포함
+        try {
+          const { status } = await Location.requestForegroundPermissionsAsync();
+          if (status === 'granted') {
+            const loc = await Location.getCurrentPositionAsync({});
+            const location = `${loc.coords.latitude},${loc.coords.longitude}`;
+
+            await fetch(`${apiBaseUrl}/report`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: data, location }),
+            });
+            console.log('🚩 자동 신고 완료:', data, location);
+          } else {
+            console.log('⚠️ 위치 권한 거부됨, 위치 없이 신고');
+            await fetch(`${apiBaseUrl}/report`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: data }),
+            });
+          }
+        } catch (err) {
+          console.error('🚨 자동 신고 실패:', err);
+        }
+
         Alert.alert(
           "⚠️ 주의! 피싱 사이트로 의심됩니다!", 
           "이 링크는 위험할 수 있습니다. 접속을 권장하지 않습니다.",
