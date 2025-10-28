@@ -99,9 +99,26 @@ export default function QRInterfaceWrapper() {
       console.log("🔍 reason(derived) 값:", reason);
 
       if (safe) {
-        console.log(
-          "✅ 안전한 링크입니다", data);
-          Linking.openURL(data)
+        console.log("✅ 안전한 링크입니다", data);
+        try {
+          // 안전한 URL은 즉시 브라우저로 리다이렉트 (프로토콜 보정 포함)
+          if (data && typeof data === 'string') {
+            const urlToOpen = data.startsWith('http://') || data.startsWith('https://')
+              ? data
+              : `https://${data}`;
+            await Linking.openURL(urlToOpen);
+          } else if (result.url && typeof result.url === 'string') {
+            const urlToOpen = result.url.startsWith('http://') || result.url.startsWith('https://')
+              ? result.url
+              : `https://${result.url}`;
+            await Linking.openURL(urlToOpen);
+          } else {
+            Alert.alert("안전 URL 확인 실패", "리디렉트할 URL을 찾을 수 없습니다.");
+          }
+        } catch (e) {
+          console.error("리디렉션 실패:", e);
+          Alert.alert("리디렉션 실패", "브라우저를 여는 중 문제가 발생했습니다.");
+        }
       } else if (safe === false) {
         // 🚨 피싱 의심 URL 자동 신고 및 위치 정보 포함
         try {
@@ -129,13 +146,13 @@ export default function QRInterfaceWrapper() {
         }
 
         Alert.alert(
-          "⚠️ 주의! 피싱 사이트로 의심됩니다!", 
-          "이 링크는 위험할 수 있습니다. 접속을 권장하지 않습니다.",
+          "⚠️ 피싱 사이트 의심",
+          "이 URL은 피싱 또는 악성 사이트로 의심되어 차단되었습니다.",
           [
-            { text: "취소", style: "cancel" },
-            { text: "그래도 열기", onPress: () => Linking.openURL(data) }
+            { text: "확인", style: "destructive" }
           ]
         );
+        console.log("🚫 위험 URL 차단:", data);
       } else {
         Alert.alert(
           "ℹ️ 검사 결과를 확인할 수 없습니다", 
