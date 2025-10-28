@@ -9,3 +9,8 @@ CREATE TABLE IF NOT EXISTS reports (
 -- 인덱스
 CREATE INDEX IF NOT EXISTS idx_reports_detected_at ON reports(detected_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reports_url ON reports(url);
+
+ALTER TABLE reports
+ADD COLUMN dispatched BOOLEAN NOT NULL DEFAULT false,
+ADD COLUMN dispatched_at TIMESTAMPTZ,
+ADD COLUMN dispatch_response JSONB;
