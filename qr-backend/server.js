@@ -1,8 +1,15 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
+import reportRoutes from './routes/reportRoutes.js';
+import dispatchRoutes from './routes/dispatchRoutes.js';
+import cors from 'cors';
+import 'dotenv/config';
 
 const app = express();
+app.use(cors({ origin: process.env.ALLOW_ORIGIN || 'http://localhost:5173' }));
 app.use(express.json());
+app.use('/report', reportRoutes);
+app.use('/dispatch', dispatchRoutes);
 
 // ===== 설정 =====
 const PORT = process.env.PORT || 3000;
@@ -77,10 +84,10 @@ function normalizeUrlCandidate(u) {
 async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected, actualRedirectCount, actualFinalUrl) {
   const result = {
     originalUrl,
-    finalUrl: actualFinalUrl || originalUrl,  // 실제 최종 URL 사용!
+    finalUrl: actualFinalUrl || originalUrl,
     score: 0,
     reasons: [],
-    redirects: actualRedirectCount || 0,  // 실제 리디렉션 횟수!
+    redirects: actualRedirectCount || 0,
     formsToExternal: [],
     hasPasswordInput: false,
     hiddenIframes: 0,
@@ -92,10 +99,11 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected, 
     risk: 'unknown'
   };
 
+  // DOM level info (forms, password inputs, iframes, scripts, images)
   const domInfo = await page.evaluate(() => {
     const forms = Array.from(document.querySelectorAll('form')).map(f => ({
-      action: f.action || '',
-      method: (f.method || '').toLowerCase()
+      action: f.getAttribute('action') || '',
+      method: (f.getAttribute('method') || '').toLowerCase()
     }));
     const passwordExists = !!document.querySelector('input[type="password"]');
     const iframes = Array.from(document.querySelectorAll('iframe')).map(i => {
@@ -105,20 +113,21 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected, 
         hidden: (style.display === 'none' || style.visibility === 'hidden' || i.width === "0" || i.height === "0")
       };
     });
-    const scripts = Array.from(document.scripts).map(s => s.src || '');
+    const scripts = Array.from(document.scripts).map(s => s.src || s.innerText || '');
     const images = Array.from(document.querySelectorAll('img')).map(img => img.src || '');
     return { forms, passwordExists, iframes, scripts, images };
-  }).catch(() => ({
-    forms: [],
-    passwordExists: false,
-    iframes: [],
-    scripts: [],
-    images: []
-  }));
+  }).catch(() => ({ forms: [], passwordExists: false, iframes: [], scripts: [], images: [] }));
+
+  // get raw HTML to scan for static indicators (base64, eval strings, atob usage etc.)
+  let pageContent = '';
+  try {
+    pageContent = await page.content();
+  } catch (e) { /* ignore */ }
 
   try {
     const parsedFinal = new URL(result.finalUrl);
     result.finalHostname = parsedFinal.hostname.toLowerCase();
+
     for (const f of domInfo.forms) {
       if (!f.action) continue;
       try {
@@ -126,20 +135,26 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected, 
         if (actionUrl.hostname !== parsedFinal.hostname) {
           result.formsToExternal.push(actionUrl.href);
         }
-      } catch {}
+      } catch {
+        // if action is relative but there is a password input on the page, flag it later
+      }
     }
   } catch {}
 
   result.hasPasswordInput = domInfo.passwordExists;
   result.hiddenIframes = domInfo.iframes.filter(i => i.hidden).length;
+
+  // external scripts/images counting: treat inline scripts with suspicious keywords as external-weight-equivalent
   result.externalScriptCount = domInfo.scripts.filter(s => {
     try {
       const u = new URL(s, result.finalUrl);
       return u.hostname !== (new URL(result.finalUrl)).hostname;
     } catch {
-      return false;
+      // inline script: count as external if contains suspicious keywords
+      return /eval\(|atob\(|fromCharCode|window\.|document\.|location\.|replace\(|\bbase64\b/i.test(s);
     }
   }).length;
+
   result.externalImageCount = domInfo.images.filter(img => {
     try {
       const u = new URL(img, result.finalUrl);
@@ -160,85 +175,91 @@ async function analyzePage(page, originalUrl, evalDetected, base64EvalDetected, 
     result.isHttps = parsedOrig.protocol === 'https:';
   } catch {}
 
-  // === 점수 계산 ===
-  
-  // 🚨 Chrome 에러 페이지 감지 (페이지 로딩 실패 = 차단/악성 사이트 의심)
-  if (result.finalUrl.startsWith('chrome-error://') || 
-      result.finalUrl.startsWith('about:') ||
-      result.finalUrl.includes('chromewebdata')) {
-    result.score += 30;
-    result.reasons.push('🚨 페이지 로딩 실패 (차단된 악성 사이트 의심)');
+  // === Static content scans for base64/eval strings (covers pre-decoded payloads) ===
+  const staticSuspicion = [];
+  if (pageContent && /(?:atob\(|base64_decode\(|window\.atob|btoa\(|eval\(|fromCharCode\(|\bbase64\b)/i.test(pageContent)) {
+    staticSuspicion.push('정적 JS/HTML 내 eval/atob/base64 패턴 발견');
+    result.score += WEIGHTS.base64EvalDetected * 0.7; // partial weight for static detection
   }
-  
-  if (evalDetected) { result.score += WEIGHTS.evalDetected; result.reasons.push('eval() 의심 코드 탐지'); }
-  if (base64EvalDetected) { result.score += WEIGHTS.base64EvalDetected; result.reasons.push('base64->eval 의심'); }
+
+  // === scoring ===
+  if (pageContent && /(password\")|(input\s+type=\"password\")/i.test(pageContent)) {
+    result.hasPasswordInput = true;
+    result.score += WEIGHTS.hasPasswordInput;
+    result.reasons.push('비밀번호 입력 필드 존재(정적탐지)');
+  }
+
+  if (evalDetected) { result.score += WEIGHTS.evalDetected; result.reasons.push('eval() 동적 실행 감지'); }
+  if (base64EvalDetected) { result.score += WEIGHTS.base64EvalDetected; result.reasons.push('base64->eval 동적 탐지'); }
   if (!result.isHttps) { result.score += WEIGHTS.httpsMissing; result.reasons.push('HTTPS 미사용'); }
 
-  // 리디렉션: 단독일 때는 점수 거의 안 줌, 다른 조건과 결합했을 때만 강화
+  // redirect scoring (keep original but slightly stronger when combined with other flags)
   if (result.redirects === 1) {
     result.score += WEIGHTS.redirects1; 
     result.reasons.push('리디렉션 1회');
   } else if (result.redirects > 1) {
     if (!result.isHttps || result.formsToExternal.length || result.hasPasswordInput) {
-      // 리디렉션 + HTTPS 없음, 또는 외부 폼/비밀번호 필드가 있을 때만 강하게 반영
       result.score += WEIGHTS.redirectsMany;
-      result.reasons.push(`리디렉션 ${result.redirects}회 + 의심 요소 동반`);
+      result.reasons.push(`리디렉션 ${result.redirects}회 + 의심 요소`);
     } else {
-      // 단순 광고/트래킹 리디렉션은 낮은 점수만 부여
       result.score += 3;
-      result.reasons.push(`리디렉션 ${result.redirects}회 (광고 가능성, 낮은 가중치)`);
+      result.reasons.push(`리디렉션 ${result.redirects}회 (낮은 가중치)`);
     }
   }
 
-  if (result.hiddenIframes > 0) { 
-    result.score += WEIGHTS.hiddenIframes; 
-    result.reasons.push(`숨긴 iframe ${result.hiddenIframes}개`); 
-    
-    // 🎯 리디렉션 + 숨긴 iframe 조합 (단계별 위험도)
+  if (result.hiddenIframes > 0) {
+    result.score += WEIGHTS.hiddenIframes;
+    result.reasons.push(`숨긴 iframe ${result.hiddenIframes}개`);
     if (result.redirects >= 2) {
-      // 리디렉션 2회 이상 + iframe = 확실한 피싱!
-      result.score += 50;
-      result.reasons.push('🚨 다중 리디렉션(2회+) + 숨긴 iframe (피싱 확실)');
+      result.score += 40; // slightly lower than before but still strong
+      result.reasons.push('다중 리디렉션 + 숨긴 iframe 조합 (강력 의심)');
     } else if (result.redirects === 1) {
-      // 리디렉션 1회 + iframe = 의심
-      result.score += 30;
-      result.reasons.push('⚠️ 리디렉션 + 숨긴 iframe (피싱 의심)');
+      result.score += 20;
+      result.reasons.push('리디렉션 + 숨긴 iframe (의심)');
     }
   }
-  
-  if (result.externalScriptCount > 10) { result.score += WEIGHTS.externalScriptMany; result.reasons.push(`외부 스크립트 다수 (${result.externalScriptCount})`); }
+
+  if (result.externalScriptCount > 10) { result.score += WEIGHTS.externalScriptMany; result.reasons.push(`외부/의심 스크립트 다수 (${result.externalScriptCount})`); }
   if (result.externalImageCount > 5) { result.score += WEIGHTS.externalImagesMany; result.reasons.push(`외부 이미지 다수 (${result.externalImageCount})`); }
   if (result.hostIsIP) { result.score += WEIGHTS.hostIsIP; result.reasons.push('호스트가 IP 주소'); }
   if (result.punycode) { result.score += WEIGHTS.punycode; result.reasons.push('Punycode 도메인 (xn--)'); }
   if (result.isShortener) { result.score += WEIGHTS.isShortener; result.reasons.push('단축 URL 사용'); }
 
-  if (result.formsToExternal.length) {
-    result.score += WEIGHTS.formsToExternal * 0.4;  //
-    result.reasons.push(`외부 폼 제출 (${result.formsToExternal.length})`);
-    if (result.hasPasswordInput) {
+  // forms: if there is a password input on page but actions are relative, treat as suspicious
+  if (domInfo.forms.length) {
+    const externalCount = result.formsToExternal.length;
+    if (externalCount) {
+      result.score += WEIGHTS.formsToExternal * 0.6;
+      result.reasons.push(`외부 폼 제출 (${externalCount})`);
+    } else if (result.hasPasswordInput && domInfo.forms.some(f => !f.action || f.action.trim() === '')) {
+      // relative action with password fields is suspicious
+      result.score += WEIGHTS.formsToExternal * 0.8;
+      result.reasons.push('상대경로/빈 action + 비밀번호 입력 조합(의심)');
+    }
+    if (result.hasPasswordInput && result.formsToExternal.length) {
       result.score += WEIGHTS.externalFormWithPasswordBonus;
       result.reasons.push('외부 폼 + 비밀번호 입력 필드 동시 존재');
     }
   }
 
-  if (result.hasPasswordInput) {
-    result.score += WEIGHTS.hasPasswordInput;
-    result.reasons.push('비밀번호 입력 필드 존재');
-  }
+  // static suspicion messages
+  for (const m of staticSuspicion) result.reasons.push(m);
 
+  // whitelist adjustment remains but less absolute: subtract smaller amount so suspicious payloads still surface
   try {
     const hostLower = (new URL(originalUrl)).hostname.toLowerCase();
     if (WHITELIST_HOSTS.has(hostLower) || WHITELIST_HOSTS.has(result.finalHostname)) {
-      // 🎯 화이트리스트는 거의 모든 점수 무시! (eval/base64 제외하고는 안전)
       const originalScore = result.score;
-      result.score = Math.max(0, result.score - 200);  // 사실상 0점으로 만듦
+      // reduce but not zero out
+      result.score = Math.max(0, result.score - 50);
       result.reasons.push(`✅ 신뢰 도메인 보정 (-${originalScore - result.score})`);
       result.whitelisted = true;
     }
   } catch {}
 
-  if (result.score <= 15) result.risk = '✅ 안전';
-  else if (result.score <= 35) result.risk = '⚠️ 주의';
+  // new thresholds: more sensitive
+  if (result.score <= 10) result.risk = '✅ 안전';
+  else if (result.score <= 25) result.risk = '⚠️ 주의';
   else result.risk = '🚨 위험';
 
   return result;
@@ -317,7 +338,7 @@ app.post('/scan', async (req, res) => {
         // 화이트해커 레벨 탐지 🔥
         let suspicionScore = 0;
         
-        // 🚨 치명적인 조합 패턴 우선 체크 (즉시 탐지!)
+        // 치명적인 조합 패턴 우선 체크 (즉시 탐지!)
         
         // 1. eval + location 조합 (리디렉션 공격)
         if ((/eval/i.test(decodedStr) && /location/i.test(decodedStr)) ||
@@ -387,11 +408,37 @@ app.post('/scan', async (req, res) => {
     // helper delay (waitForTimeout 대체)
     function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
-    // 🚀 domcontentloaded로 빠른 리디렉션도 추적!
+    // 🚀 네트워크 아이들까지 기다리고, 추가 JS 실행 시간 확보
     try {
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT });
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: NAV_TIMEOUT });
+      // allow additional JS-driven late insertions (iframes/forms) to appear
+      await delay(3000);
     } catch (err) {
       const host = new URL(url).hostname.toLowerCase();
+
+      // 차단된 URL 또는 접근 불가 시 피싱 의심 처리
+      if (err.message && err.message.includes('net::ERR_BLOCKED_BY_CLIENT')) {
+        console.log('🚨 피싱 의심: 클라이언트 차단됨 -> DB에 저장');
+        try {
+          await fetch('http://localhost:' + PORT + '/report', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url })
+          });
+        } catch (dbErr) {
+          console.log('⚠️ DB 저장 중 오류:', dbErr.message);
+        }
+
+        await browser.close();
+        return res.json({
+          safe: false,
+          risk: '🚨 위험',
+          reason: '클라이언트에서 차단된 URL (피싱 또는 악성 의심)',
+          url
+        });
+      }
+
+      // 화이트리스트 도메인은 예외 처리
       if (WHITELIST_HOSTS.has(host)) {
         console.log('✅ 화이트리스트 도메인 접근 실패 무시:', host);
         await browser.close();
@@ -400,7 +447,15 @@ app.post('/scan', async (req, res) => {
           reason: '✅ 신뢰 도메인 (화이트리스트, Puppeteer 차단 무시)',
         });
       }
-      throw err;
+
+      console.log('❌ 페이지 접근 실패:', err.message);
+      await browser.close();
+      return res.json({
+        safe: false,
+        risk: '🚨 위험',
+        reason: '페이지 접근 실패 (피싱 또는 차단된 사이트 가능성)',
+        url
+      });
     }
     // await page.goto(url, { waitUntil: 'domcontentloaded', timeout: NAV_TIMEOUT }).catch(()=>null);
     
@@ -448,6 +503,16 @@ app.post('/scan', async (req, res) => {
     // 실제 리디렉션 정보 전달
     const analysis = await analyzePage(page, url, evalDetected, base64EvalDetected, actualRedirectCount, redirectDestinations[redirectDestinations.length - 1]);
 
+    // 🚨 위험하거나 ⚠️ 주의일 때 자동 신고 저장
+    if (analysis.risk !== '✅ 안전') {
+      // 내부적으로 /report 엔드포인트로 POST 요청 (DB 직접 접근 대신)
+      await fetch('http://localhost:' + PORT + '/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      }).catch(() => {});
+    }
+
     await browser.close();
     
     // 앱이 기대하는 형식으로 응답 변환
@@ -470,6 +535,9 @@ app.post('/scan', async (req, res) => {
     res.status(500).json({ error: '검사 중 오류', detail: err.message });
   }
 });
+
+
+
 
 // 서버 시작
 app.listen(PORT, '0.0.0.0', () => {
