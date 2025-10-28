@@ -1,10 +1,12 @@
 import express from 'express';
 import puppeteer from 'puppeteer';
-import pg from 'pg';
-
+import reportRoutes from './routes/reportRoutes.js';
+import dispatchRoutes from './routes/dispatchRoutes.js';
 
 const app = express();
 app.use(express.json());
+app.use('/report', reportRoutes);
+app.use('/dispatch', dispatchRoutes);
 
 // ===== 설정 =====
 const PORT = process.env.PORT || 3000;
@@ -458,7 +460,12 @@ app.post('/report', async (req, res) => {
 
     // 🚨 위험하거나 ⚠️ 주의일 때 자동 신고 저장
     if (analysis.risk !== '✅ 안전') {
-      await saveReport({ url });
+      // 내부적으로 /report 엔드포인트로 POST 요청 (DB 직접 접근 대신)
+      await fetch('http://localhost:' + PORT + '/report', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url })
+      }).catch(() => {});
     }
 
     await browser.close();
@@ -483,25 +490,6 @@ app.post('/report', async (req, res) => {
     res.status(500).json({ error: '검사 중 오류', detail: err.message });
   }
 });
-//db 
-const pool = new pg.Pool({
-  host: process.env.PGHOST || 'localhost',
-  port: process.env.PGPORT || '5432',
-  user: process.env.PGUSER || 'admin',
-  password: process.env.PGPASSWORD || '1234',
-  database: process.env.PGDATABASE || 'qssage'
-});
-async function saveReport({ url, location = null }) {
-  try {
-    await pool.query(
-      'INSERT INTO reports (url, location) VALUES ($1, $2)',
-      [url, location]
-    );
-    console.log('📩 DB에 신고 저장:', url, location);
-  } catch (err) {
-    console.error('DB 저장 실패:', err.message);
-  }
-}
 
 
 
