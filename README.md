@@ -138,3 +138,18 @@ npm run dev
 ### 📱 사용자 앱
 npm install
 npx expo start
+
+
+
+
+# 1️⃣ PostgreSQL 실행
+cd qr-backend/database
+docker compose up -d
+
+# 2️⃣ 백엔드 서버 실행
+cd ..
+node server.js
+
+# 3️⃣ 관리자 대시보드 실행
+cd ../admin-dashboard
+npm run dev
