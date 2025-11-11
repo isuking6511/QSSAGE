@@ -4,7 +4,15 @@ import reportRoutes from './routes/reportRoutes.js';
 import dispatchRoutes from './routes/dispatchRoutes.js';
 import cors from 'cors';
 import 'dotenv/config';
+import cron from 'node-cron';
+import dispatchRoutes from './routes/dispatchRoutes.js';
 
+app.use('/dispatch', dispatchRoutes);
+
+cron.schedule('0 * * * *', async () => {
+  console.log(' 매시간 자동 신고 실행');
+  await fetch('http://localhost:3000/dispatch', { method: 'POST' });
+});
 const app = express();
 app.use(cors({ origin: process.env.ALLOW_ORIGIN || 'http://localhost:5173' }));
 app.use(express.json());
