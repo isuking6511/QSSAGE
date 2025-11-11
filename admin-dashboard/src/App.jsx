@@ -10,7 +10,7 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState("");
   const [q, setQ] = useState("");
-  const [statusData, setStatusData] = useState([]);
+  const [statusData, setStatusData] = useState([]); // ✅ 메일 상태 데이터 추가
 
   // ── helpers ──────────────────────────────────────────────
   const selectedCount = selected.length;
@@ -43,6 +43,8 @@ export default function App() {
       setLoading(false);
     }
   };
+
+  // ✅ 메일 발송 상태 조회
   const fetchStatus = async () => {
     try {
       const res = await axios.get(`${API_URL}/dispatch/status`);
@@ -51,6 +53,7 @@ export default function App() {
       console.warn("상태 불러오기 실패");
     }
   };
+
   useEffect(() => {
     fetchReports();
     fetchStatus();
@@ -58,6 +61,7 @@ export default function App() {
     return () => clearInterval(interval);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
   const toggle = (id) =>
     setSelected((prev) =>
       prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
@@ -69,16 +73,17 @@ export default function App() {
   };
 
   const dispatch = async () => {
-    if (!selected.length) return setMsg("신고할 항목을 선택.");
+    if (!selected.length) return setMsg("신고할 항목을 선택하세요.");
     setLoading(true);
     setMsg("");
     try {
       const res = await axios.post(`${API_URL}/dispatch/manual`, {
         ids: selected,
       });
-      setMsg(`🚔 ${res.data?.count ?? selected.length}건 신고 완료`);
+      setMsg(`🚔 ${res.data?.sent ?? selected.length}건 신고 완료`);
       setSelected([]);
       await fetchReports();
+      await fetchStatus();
     } catch (e) {
       setErr("신고 전송 실패");
     } finally {
@@ -116,7 +121,7 @@ export default function App() {
                 QSSAGE 운영자 대시보드
               </h1>
               <p className="text-xs text-slate-500 hidden sm:block">
-                신고된 URL 일괄 신고 · 정리
+                신고된 URL 관리 · 메일 발송 현황
               </p>
             </div>
           </div>
@@ -173,7 +178,7 @@ export default function App() {
           </div>
         </div>
 
-        {/* Table */}
+        {/* Reports Table */}
         <div className="bg-white rounded-xl shadow border border-slate-200 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="min-w-full text-sm">
@@ -189,7 +194,7 @@ export default function App() {
                   <th className="text-left px-4 py-3">ID</th>
                   <th className="text-left px-4 py-3">URL</th>
                   <th className="text-left px-4 py-3">위치</th>
-                  <th className="text-left px-4 py-3">시간</th>
+                  <th className="text-left px-4 py-3">탐지 시각</th>
                   <th className="text-left px-4 py-3">관리</th>
                 </tr>
               </thead>
@@ -204,12 +209,6 @@ export default function App() {
                   <tr>
                     <td colSpan={6} className="px-4 py-14 text-center">
                       <div className="text-slate-500">표시할 데이터가 없습니다</div>
-                      <button
-                        onClick={fetchReports}
-                        className="mt-3 text-sm px-3 py-1.5 rounded-md border border-slate-300 hover:bg-slate-100"
-                      >
-                        새로고침
-                      </button>
                     </td>
                   </tr>
                 ) : (
@@ -226,12 +225,12 @@ export default function App() {
                         />
                       </td>
                       <td className="px-4 py-3">{r.id}</td>
-                      <td className="px-4 py-3">
+                      <td className="px-4 py-3 break-all">
                         <a
                           href={r.url}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-indigo-600 hover:underline break-all"
+                          className="text-indigo-600 hover:underline"
                         >
                           {r.url}
                         </a>
@@ -256,62 +255,64 @@ export default function App() {
                 )}
               </tbody>
             </table>
-            <section>
-  <h2 className="text-lg font-semibold mt-10 mb-3">📊 메일 발송 상태</h2>
-  <div className="bg-white rounded-xl shadow border border-slate-200 overflow-hidden">
-    <div className="overflow-x-auto">
-      <table className="min-w-full text-sm">
-        <thead className="bg-slate-100 text-slate-700">
-          <tr className="border-b border-slate-200">
-            <th className="text-left px-4 py-3">URL</th>
-            <th className="text-left px-4 py-3">상태</th>
-            <th className="text-left px-4 py-3">발송 시각</th>
-            <th className="text-left px-4 py-3">오류 메시지</th>
-          </tr>
-        </thead>
-        <tbody>
-          {statusData.length === 0 ? (
-            <tr>
-              <td colSpan={4} className="text-center py-6 text-slate-500">
-                발송 이력이 없습니다
-              </td>
-            </tr>
-          ) : (
-            statusData.map((s) => (
-              <tr
-                key={s.id}
-                className={`border-b border-slate-100 ${
-                  s.dispatch_error
-                    ? "bg-rose-50 text-rose-700"
-                    : s.dispatched
-                    ? "bg-emerald-50 text-emerald-700"
-                    : "bg-amber-50 text-amber-700"
-                }`}
-              >
-                <td className="px-4 py-3 break-all">{s.url}</td>
-                <td className="px-4 py-3">
-                  {s.dispatch_error
-                    ? "⚠️ 실패"
-                    : s.dispatched
-                    ? "✅ 완료"
-                    : "⏳ 대기"}
-                </td>
-                <td className="px-4 py-3">
-                  {s.dispatched_at
-                    ? new Date(s.dispatched_at).toLocaleString()
-                    : "-"}
-                </td>
-                <td className="px-4 py-3">{s.dispatch_error || "-"}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
-    </div>
-  </div>
-</section>
           </div>
         </div>
+
+        {/* ✅ 메일 발송 상태 섹션 */}
+        <section>
+          <h2 className="text-lg font-semibold mt-10 mb-3">📊 메일 발송 상태</h2>
+          <div className="bg-white rounded-xl shadow border border-slate-200 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead className="bg-slate-100 text-slate-700">
+                  <tr className="border-b border-slate-200">
+                    <th className="text-left px-4 py-3">URL</th>
+                    <th className="text-left px-4 py-3">상태</th>
+                    <th className="text-left px-4 py-3">발송 시각</th>
+                    <th className="text-left px-4 py-3">오류 메시지</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {statusData.length === 0 ? (
+                    <tr>
+                      <td colSpan={4} className="text-center py-6 text-slate-500">
+                        발송 이력이 없습니다
+                      </td>
+                    </tr>
+                  ) : (
+                    statusData.map((s) => (
+                      <tr
+                        key={s.id}
+                        className={`border-b border-slate-100 ${
+                          s.dispatch_error
+                            ? "bg-rose-50 text-rose-700"
+                            : s.dispatched
+                            ? "bg-emerald-50 text-emerald-700"
+                            : "bg-amber-50 text-amber-700"
+                        }`}
+                      >
+                        <td className="px-4 py-3 break-all">{s.url}</td>
+                        <td className="px-4 py-3">
+                          {s.dispatch_error
+                            ? "⚠️ 실패"
+                            : s.dispatched
+                            ? "✅ 완료"
+                            : "⏳ 대기"}
+                        </td>
+                        <td className="px-4 py-3">
+                          {s.dispatched_at
+                            ? new Date(s.dispatched_at).toLocaleString()
+                            : "-"}
+                        </td>
+                        <td className="px-4 py-3">{s.dispatch_error || "-"}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
       </main>
     </div>
   );
