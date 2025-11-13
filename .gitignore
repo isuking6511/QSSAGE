@@ -36,3 +36,7 @@ yarn-error.*
 # typescript
 *.tsbuildinfo
 qr-backend/data/
+
+# 모든 경로의 .env 파일 무시
+**/.env
+**/.env.*
