@@ -26,7 +26,7 @@
 | 🚫 피싱 차단 | 의심 URL 접근 차단 | `ERR_BLOCKED_BY_CLIENT` 발생 시 DB 저장 및 차단 알림 |
 | 📡 관리자 대시보드 | 신고 URL 실시간 모니터링 | React + Tailwind UI, 검색/선택/삭제/일괄 신고 |
 | 📬 자동 신고 | 신고 대상 메일 발송 | Nodemailer, Gmail App Password 사용 |
-| 🕒 자동 백업 | 매일 03:00, DB 백업 + 메일 전송 | PDF, CSV 자동 생성 + 이메일 첨부 |
+| 🕒 자동 백업 | 매일 03:00 AM, DB 백업 + 메일 전송 | PDF, CSV 자동 생성 + 이메일 첨부 |
 | 🔔 웹훅 알림 | 신고 즉시 Slack/Discord 전송 | Webhook API로 운영자 실시간 알림 |
 | 📊 통계 및 시각화(예정) | 신고 건수, 지역 분포, 탐지율 그래프 | Chart.js, Leaflet.js 기반 시각화 예정 |
 
